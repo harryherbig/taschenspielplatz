@@ -344,6 +344,15 @@ canvas {
   var carSpeed = 3; // tiles per second
   var carPathIndex = 0;
   var carProgress = 0; // 0..1 between current and next path node
+  var carTilt = 0;           // body roll in degrees (lean into turns)
+  var carSquash = 1;         // vertical scale (squash/stretch on start/stop)
+  var carPrevAngle = 0;      // previous frame angle for computing angular velocity
+  var carJustStarted = 0;    // countdown for start bounce
+  var carWasMoving = false;  // track transitions
+
+  // Camera follow
+  var cameraFollowing = false;
+  var userPanTimeout = null;
 
   // Animation
   var animFrameId = null;
@@ -511,10 +520,23 @@ canvas {
     var sy = carPixelY * scale + panY;
     var carW = TILE_SIZE * 0.55 * scale;
     var carH = TILE_SIZE * 0.75 * scale;
+    var rotRad = (carAngle - 90) * Math.PI / 180;
+    var tiltRad = carTilt * Math.PI / 180;
 
+    // ── Car body with drop shadow ──
     ctx.save();
     ctx.translate(sx, sy);
-    ctx.rotate((carAngle - 90) * Math.PI / 180); // asset faces up, so -90 to align with 0=right
+    ctx.rotate(rotRad);
+
+    // Tilt: skew perpendicular to direction of travel
+    ctx.transform(1, 0, Math.tan(tiltRad), carSquash, 0, 0);
+
+    // Shadow (rendered via canvas shadow API — universally supported)
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+    ctx.shadowBlur = Math.max(4, 6 * scale);
+    ctx.shadowOffsetX = 3 * scale;
+    ctx.shadowOffsetY = 4 * scale;
+
     ctx.drawImage(assets.car, -carW / 2, -carH / 2, carW, carH);
     ctx.restore();
   }
@@ -657,6 +679,8 @@ canvas {
     carPathIndex = 0;
     carProgress = 0;
     carMoving = true;
+    carJustStarted = 0.25; // trigger start bounce
+    cameraFollowing = true; // car is moving, camera follows
   }
 
   function stopCar() {
@@ -664,6 +688,7 @@ canvas {
     carPath = [];
     carPathIndex = 0;
     carProgress = 0;
+    carSquash = 0.92; // brief compress on stop, springs back in updateCar check below
   }
 
   function updateCar(dt) {
@@ -725,7 +750,23 @@ canvas {
     var dy = to.y - from.y;
     if (dx !== 0 || dy !== 0) {
       var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+      carPrevAngle = carAngle;
       carAngle = lerpAngle(carAngle, targetAngle, Math.min(1, dt * 10));
+    }
+
+    // ── Tilt: lean into turns based on angular velocity ──
+    var angularVel = ((carAngle - carPrevAngle + 540) % 360) - 180;
+    var targetTilt = Math.max(-3.5, Math.min(3.5, angularVel * 0.8));
+    carTilt += (targetTilt - carTilt) * Math.min(1, dt * 8);
+
+    // ── Squash: compress on start, stretch on stop ──
+    if (carJustStarted > 0) {
+      carJustStarted -= dt;
+      // Quick squash then spring back
+      var sp = Math.max(0, carJustStarted / 0.25);
+      carSquash = 1 - 0.08 * Math.sin(sp * Math.PI);
+    } else {
+      carSquash += (1 - carSquash) * Math.min(1, dt * 6);
     }
 
     world.car.x = from.x;
@@ -809,6 +850,7 @@ canvas {
       if (!isPanning && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
         isPanning = true;
         touchMoved = true;
+        cameraFollowing = false; // user took over
       }
 
       if (isPanning) {
@@ -819,6 +861,7 @@ canvas {
       }
     } else if (pArr.length >= 2) {
       var pd = getPinchData(pArr);
+      cameraFollowing = false; // user took over
 
       // Zoom
       var zoomRatio = pd.dist / lastPinchDist;
@@ -867,6 +910,7 @@ canvas {
 
   function onWheel(e) {
     e.preventDefault();
+    cameraFollowing = false; // user took over
     var rect = canvas.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
@@ -1004,6 +1048,28 @@ canvas {
     lastTime = timestamp;
 
     updateCar(dt);
+
+    // Spring back squash/tilt when stopped
+    if (!carMoving) {
+      carSquash += (1 - carSquash) * Math.min(1, dt * 8);
+      carTilt += (0 - carTilt) * Math.min(1, dt * 6);
+    }
+
+    // ── Camera follow: soft ease toward car while moving ──
+    if (cameraFollowing) {
+      var targetPanX = canvas.width / 2 - carPixelX * scale;
+      var targetPanY = canvas.height / 2 - carPixelY * scale;
+      var ease = Math.min(1, dt * 2.5); // gentle lag
+      panX += (targetPanX - panX) * ease;
+      panY += (targetPanY - panY) * ease;
+
+      // Stop following once car is stopped and camera has caught up
+      if (!carMoving) {
+        var dPan = Math.abs(targetPanX - panX) + Math.abs(targetPanY - panY);
+        if (dPan < 1) cameraFollowing = false;
+      }
+    }
+
     render();
 
     animFrameId = requestAnimationFrame(gameLoop);
