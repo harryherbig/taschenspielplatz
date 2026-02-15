@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Taschenspielplatz</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #2a5a1e;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+#viewport {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  overflow: hidden;
+}
+
+canvas {
+  position: absolute;
+  top: 0; left: 0;
+  image-rendering: auto;
+}
+
+/* UI Layer */
+#ui {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 100;
+}
+
+#app-title {
+  position: absolute;
+  top: 8px; left: 0; right: 0;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.5);
+  pointer-events: none;
+}
+
+.ui-btn {
+  pointer-events: auto;
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: white;
+  font-size: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ui-btn:active {
+  transform: scale(0.9);
+  background: rgba(0,0,0,0.7);
+}
+
+#btn-group-right {
+  position: absolute;
+  bottom: 32px; right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#btn-group-left {
+  position: absolute;
+  bottom: 32px; left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Night overlay */
+#night-overlay {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(10, 15, 40, 0.55);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1s ease;
+  z-index: 50;
+}
+
+#night-overlay.active {
+  opacity: 1;
+}
+
+/* Safe area insets for notched devices */
+@supports (padding-top: env(safe-area-inset-top)) {
+  #app-title { top: calc(8px + env(safe-area-inset-top)); }
+  #btn-group-right { bottom: calc(32px + env(safe-area-inset-bottom)); right: calc(16px + env(safe-area-inset-right)); }
+  #btn-group-left { bottom: calc(32px + env(safe-area-inset-bottom)); left: calc(16px + env(safe-area-inset-left)); }
+}
+</style>
+</head>
+<body>
+
+<div id="viewport">
+  <canvas id="world-canvas"></canvas>
+</div>
+
+<div id="night-overlay"></div>
+
+<div id="ui">
+  <div id="app-title">Taschenspielplatz</div>
+  <div id="btn-group-right">
+    <button class="ui-btn" id="btn-daynight" aria-label="Tag/Nacht">☀️</button>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ─── Constants ─────────────────────────────────────────────
+  var TILE_SIZE = 128;
+  var STORAGE_KEY = 'taschenspielplatz_v1';
+  var RENDER_BUFFER = 2; // extra tiles beyond viewport
+
+  // ─── Asset Loading ─────────────────────────────────────────
+  var ASSET_NAMES = ['ground', 'road', 'road_curved', 'road_crossroad', 'car'];
+  var assets = {};
+  var assetsLoaded = 0;
+
+  function loadAssets(callback) {
+    ASSET_NAMES.forEach(function(name) {
+      var img = new Image();
+      img.onload = function() {
+        assets[name] = img;
+        assetsLoaded++;
+        if (assetsLoaded === ASSET_NAMES.length) callback();
+      };
+      img.onerror = function() {
+        console.error('Failed to load asset: ' + name);
+        assetsLoaded++;
+        if (assetsLoaded === ASSET_NAMES.length) callback();
+      };
+      img.src = 'assets/' + name + '.png';
+    });
+  }
+
+  // ─── World Data Model ──────────────────────────────────────
+  // The world is a pure data object. The renderer reads it, the controls mutate it.
+  // This separation allows future editors, generators, or JSON loading.
+
+  function createEmptyWorld(w, h) {
+    var tiles = [];
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        tiles.push({ x: x, y: y, type: 'ground' });
+      }
+    }
+    return {
+      width: w,
+      height: h,
+      tiles: tiles,
+      interactives: [],
+      car: { x: 0, y: 0, angle: 0 }
+    };
+  }
+
+  function getTile(world, x, y) {
+    if (x < 0 || x >= world.width || y < 0 || y >= world.height) return null;
+    return world.tiles[y * world.width + x];
+  }
+
+  function setTile(world, x, y, type, rotation) {
+    if (x < 0 || x >= world.width || y < 0 || y >= world.height) return;
+    var tile = world.tiles[y * world.width + x];
+    tile.type = type;
+    tile.rotation = rotation || 0;
+  }
+
+  function isRoad(world, x, y) {
+    var t = getTile(world, x, y);
+    if (!t) return false;
+    return t.type === 'road' || t.type === 'road_curved' || t.type === 'road_crossroad';
+  }
+
+  // ─── Default World Layout ──────────────────────────────────
+  // A hand-crafted 20x20 mini-city with roads, curves, and crossroads.
+  // road rotation: 0 = default (vertical for straight), 90 = rotated 90° CW
+  // road_curved at rotation 0: connects South→East (bottom to right)
+  //   90: connects West→South (left to bottom)
+  //   180: connects North→West (top to left)
+  //   270: connects East→North (right to top)
+
+  function buildDefaultWorld() {
+    var world = createEmptyWorld(20, 20);
+
+    // Helper: place road tiles
+    function road(x, y, rot) { setTile(world, x, y, 'road', rot || 0); }
+    function curve(x, y, rot) { setTile(world, x, y, 'road_curved', rot || 0); }
+    function cross(x, y) { setTile(world, x, y, 'road_crossroad', 0); }
+
+    // ── Main horizontal avenue (row 3) ──
+    curve(2, 3, 0);     // turn from south to east
+    road(3, 3, 90); road(4, 3, 90); road(5, 3, 90); road(6, 3, 90);
+    cross(7, 3);
+    road(8, 3, 90); road(9, 3, 90); road(10, 3, 90);
+    cross(11, 3);
+    road(12, 3, 90); road(13, 3, 90); road(14, 3, 90); road(15, 3, 90);
+    cross(16, 3);
+    curve(17, 3, 90);   // West + South
+
+    // ── Main horizontal avenue (row 10) ──
+    curve(2, 10, 270);  // North + East
+    road(3, 10, 90); road(4, 10, 90); road(5, 10, 90); road(6, 10, 90);
+    cross(7, 10);
+    road(8, 10, 90); road(9, 10, 90); road(10, 10, 90);
+    cross(11, 10);
+    road(12, 10, 90); road(13, 10, 90); road(14, 10, 90); road(15, 10, 90);
+    cross(16, 10);
+    curve(17, 10, 180);
+
+    // ── Main horizontal avenue (row 16) ──
+    curve(4, 16, 0);
+    road(5, 16, 90); road(6, 16, 90);
+    cross(7, 16);
+    road(8, 16, 90); road(9, 16, 90); road(10, 16, 90);
+    cross(11, 16);
+    road(12, 16, 90); road(13, 16, 90);
+    curve(14, 16, 180);  // North + West
+
+    // ── Vertical street: col 2, rows 3→10 ──
+    road(2, 4, 0); road(2, 5, 0); road(2, 6, 0); road(2, 7, 0);
+    road(2, 8, 0); road(2, 9, 0);
+
+    // ── Vertical street: col 7, rows 3→16 ──
+    road(7, 4, 0); road(7, 5, 0); road(7, 6, 0); road(7, 7, 0);
+    road(7, 8, 0); road(7, 9, 0);
+    road(7, 11, 0); road(7, 12, 0); road(7, 13, 0); road(7, 14, 0);
+    road(7, 15, 0);
+
+    // ── Vertical street: col 11, rows 3→16 ──
+    road(11, 4, 0); road(11, 5, 0); road(11, 6, 0); road(11, 7, 0);
+    road(11, 8, 0); road(11, 9, 0);
+    road(11, 11, 0); road(11, 12, 0); road(11, 13, 0); road(11, 14, 0);
+    road(11, 15, 0);
+
+    // ── Vertical street: col 16, rows 3→10 ──
+    road(16, 4, 0); road(16, 5, 0); road(16, 6, 0); road(16, 7, 0);
+    road(16, 8, 0); road(16, 9, 0);
+
+    // ── Vertical street: col 17, rows 3→10 (curves already placed) ──
+    road(17, 4, 0); road(17, 5, 0); road(17, 6, 0); road(17, 7, 0);
+    road(17, 8, 0); road(17, 9, 0);
+
+    // ── Small loop: top-left residential area ──
+    curve(4, 1, 0);
+    road(5, 1, 90); road(6, 1, 90);
+    curve(7, 1, 90);   // West + South
+    road(4, 2, 0);
+    road(7, 2, 0);
+    // connects into row 3 at col 4 and col 7 — need junctions
+    // col 4, row 3 is already road(90), make it a cross
+    setTile(world, 4, 3, 'road_crossroad', 0);
+    // col 7, row 3 is already cross — good
+
+    // ── Small spur: dead-end street going north from row 3 ──
+    road(14, 1, 0); road(14, 2, 0);
+    // connects to row 3 at col 14 — already road(90), needs T... use cross
+    setTile(world, 14, 3, 'road_crossroad', 0);
+
+    // ── Small loop: bottom-right (with crossroad junction at 14,13) ──
+    cross(14, 13);       // junction: north from row 10, east/south into loop
+    road(15, 13, 90); road(16, 13, 90);
+    curve(17, 13, 90);   // West + South
+    road(14, 14, 0);
+    road(17, 14, 0);
+    curve(14, 15, 270);  // East + North
+    road(15, 15, 90); road(16, 15, 90);
+    curve(17, 15, 180);  // North + West
+    // connect col 14, row 13 up to row 10
+    road(14, 11, 0); road(14, 12, 0);
+    setTile(world, 14, 10, 'road_crossroad', 0);
+
+    // ── Dead-end street south from crossroad at (11,16) ──
+    road(11, 17, 0); road(11, 18, 0); road(11, 19, 0);
+
+
+    // ── Short connector: col 4, row 13→16 ──
+    road(4, 13, 0); road(4, 14, 0); road(4, 15, 0);
+    // col 4, row 10 — need to make it reachable from row 10
+    setTile(world, 4, 10, 'road_crossroad', 0);
+    road(4, 11, 0); road(4, 12, 0);
+
+    // ── Add traffic lights at all crossroads ──
+    world.interactives = [];
+    for (var i = 0; i < world.tiles.length; i++) {
+      if (world.tiles[i].type === 'road_crossroad') {
+        world.interactives.push({
+          x: world.tiles[i].x,
+          y: world.tiles[i].y,
+          type: 'traffic_light',
+          state: 'green'
+        });
+      }
+    }
+
+    // Place car on a road tile
+    world.car = { x: 5, y: 3, angle: 90, moving: false, path: [] };
+
+    return world;
+  }
+
+  // ─── State ─────────────────────────────────────────────────
+  var world = null;
+  var canvas, ctx;
+  var viewportEl;
+  var panX = 0, panY = 0, scale = 1;
+  var MIN_SCALE = 0.3, MAX_SCALE = 3;
+  var isNight = false;
+  var nightOverlay;
+
+  // Car animation state
+  var carPixelX = 0, carPixelY = 0;
+  var carAngle = 0;
+  var carPath = [];
+  var carMoving = false;
+  var carSpeed = 3; // tiles per second
+  var carPathIndex = 0;
+  var carProgress = 0; // 0..1 between current and next path node
+
+  // Animation
+  var animFrameId = null;
+  var lastTime = 0;
+
+  // ─── Canvas Renderer ───────────────────────────────────────
+  // Only renders tiles visible in the viewport + a buffer zone.
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+
+  function worldToScreen(wx, wy) {
+    return {
+      x: wx * scale + panX,
+      y: wy * scale + panY
+    };
+  }
+
+  function screenToWorld(sx, sy) {
+    return {
+      x: (sx - panX) / scale,
+      y: (sy - panY) / scale
+    };
+  }
+
+  function screenToTile(sx, sy) {
+    var w = screenToWorld(sx, sy);
+    return {
+      x: Math.floor(w.x / TILE_SIZE),
+      y: Math.floor(w.y / TILE_SIZE)
+    };
+  }
+
+  function render() {
+    if (!ctx || !world) return;
+
+    var cw = canvas.width;
+    var ch = canvas.height;
+    ctx.clearRect(0, 0, cw, ch);
+
+    // Fill background with dark green
+    ctx.fillStyle = '#2a5a1e';
+    ctx.fillRect(0, 0, cw, ch);
+
+    // Calculate visible tile range
+    var topLeft = screenToWorld(0, 0);
+    var bottomRight = screenToWorld(cw, ch);
+
+    var startCol = Math.floor(topLeft.x / TILE_SIZE) - RENDER_BUFFER;
+    var startRow = Math.floor(topLeft.y / TILE_SIZE) - RENDER_BUFFER;
+    var endCol = Math.ceil(bottomRight.x / TILE_SIZE) + RENDER_BUFFER;
+    var endRow = Math.ceil(bottomRight.y / TILE_SIZE) + RENDER_BUFFER;
+
+    startCol = Math.max(0, startCol);
+    startRow = Math.max(0, startRow);
+    endCol = Math.min(world.width - 1, endCol);
+    endRow = Math.min(world.height - 1, endRow);
+
+    var tileSizeScaled = TILE_SIZE * scale;
+
+    // Draw tiles
+    for (var row = startRow; row <= endRow; row++) {
+      for (var col = startCol; col <= endCol; col++) {
+        var tile = getTile(world, col, row);
+        if (!tile) continue;
+
+        var sx = col * TILE_SIZE * scale + panX;
+        var sy = row * TILE_SIZE * scale + panY;
+
+        var assetName = tile.type || 'ground';
+        var img = assets[assetName];
+        if (!img) continue;
+
+        var rotation = tile.rotation || 0;
+
+        if (rotation === 0) {
+          ctx.drawImage(img, sx, sy, tileSizeScaled, tileSizeScaled);
+        } else {
+          ctx.save();
+          ctx.translate(sx + tileSizeScaled / 2, sy + tileSizeScaled / 2);
+          ctx.rotate(rotation * Math.PI / 180);
+          ctx.drawImage(img, -tileSizeScaled / 2, -tileSizeScaled / 2, tileSizeScaled, tileSizeScaled);
+          ctx.restore();
+        }
+      }
+    }
+
+    // Draw traffic lights
+    for (var i = 0; i < world.interactives.length; i++) {
+      var inter = world.interactives[i];
+      if (inter.type !== 'traffic_light') continue;
+      if (inter.x < startCol || inter.x > endCol || inter.y < startRow || inter.y > endRow) continue;
+
+      drawTrafficLight(inter);
+    }
+
+    // Draw car
+    drawCar();
+  }
+
+  function drawTrafficLight(light) {
+    var cx = light.x * TILE_SIZE * scale + panX + (TILE_SIZE * scale) / 2;
+    var cy = light.y * TILE_SIZE * scale + panY + (TILE_SIZE * scale) / 2;
+
+    var r = Math.max(6, 10 * scale);
+    var boxW = r * 2.4;
+    var boxH = r * 6.5;
+
+    // Background box
+    ctx.fillStyle = '#333';
+    ctx.beginPath();
+    var bx = cx - boxW / 2, by = cy - boxH / 2, br = r * 0.4;
+    ctx.moveTo(bx + br, by);
+    ctx.lineTo(bx + boxW - br, by);
+    ctx.arcTo(bx + boxW, by, bx + boxW, by + br, br);
+    ctx.lineTo(bx + boxW, by + boxH - br);
+    ctx.arcTo(bx + boxW, by + boxH, bx + boxW - br, by + boxH, br);
+    ctx.lineTo(bx + br, by + boxH);
+    ctx.arcTo(bx, by + boxH, bx, by + boxH - br, br);
+    ctx.lineTo(bx, by + br);
+    ctx.arcTo(bx, by, bx + br, by, br);
+    ctx.closePath();
+    ctx.fill();
+
+    // Border
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = Math.max(1, 1.5 * scale);
+    ctx.stroke();
+
+    // Lights
+    var colors = ['red', 'yellow', 'green'];
+    var lightColors = {
+      red: { on: '#ff3333', off: '#661111' },
+      yellow: { on: '#ffcc00', off: '#665500' },
+      green: { on: '#33dd33', off: '#116611' }
+    };
+
+    for (var j = 0; j < 3; j++) {
+      var color = colors[j];
+      var isOn = light.state === color;
+      ctx.fillStyle = isOn ? lightColors[color].on : lightColors[color].off;
+      ctx.beginPath();
+      ctx.arc(cx, cy - (1 - j) * r * 2 + r, r * 0.7, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Glow when on
+      if (isOn) {
+        ctx.save();
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = lightColors[color].on;
+        ctx.beginPath();
+        ctx.arc(cx, cy - (1 - j) * r * 2 + r, r * 1.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
+  function drawCar() {
+    if (!assets.car) return;
+
+    var sx = carPixelX * scale + panX;
+    var sy = carPixelY * scale + panY;
+    var carW = TILE_SIZE * 0.55 * scale;
+    var carH = TILE_SIZE * 0.75 * scale;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate((carAngle - 90) * Math.PI / 180); // asset faces up, so -90 to align with 0=right
+    ctx.drawImage(assets.car, -carW / 2, -carH / 2, carW, carH);
+    ctx.restore();
+  }
+
+  // ─── Pathfinding (BFS on road grid) ────────────────────────
+
+  function getAdjacentRoads(world, x, y) {
+    var neighbors = [];
+    var dirs = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N, E, S, W
+    for (var i = 0; i < dirs.length; i++) {
+      var nx = x + dirs[i][0];
+      var ny = y + dirs[i][1];
+      if (isRoad(world, nx, ny)) {
+        neighbors.push({ x: nx, y: ny });
+      }
+    }
+    return neighbors;
+  }
+
+  // Check if a curved road actually connects in a given direction
+  function curveConnects(rotation, dx, dy) {
+    // road_curved at rotation 0: connects South (0,1) and East (1,0)
+    // rotation 90: connects West (-1,0) and South (0,1)
+    // rotation 180: connects North (0,-1) and West (-1,0)
+    // rotation 270: connects East (1,0) and North (0,-1)
+    var connections = {
+      0:   [[0, 1], [1, 0]],
+      90:  [[-1, 0], [0, 1]],
+      180: [[0, -1], [-1, 0]],
+      270: [[1, 0], [0, -1]]
+    };
+    var conns = connections[rotation] || connections[0];
+    for (var i = 0; i < conns.length; i++) {
+      if (conns[i][0] === dx && conns[i][1] === dy) return true;
+    }
+    return false;
+  }
+
+  // Check if a straight road connects in a given direction
+  function straightConnects(rotation, dx, dy) {
+    // rotation 0: vertical — connects N (0,-1) and S (0,1)
+    // rotation 90: horizontal — connects E (1,0) and W (-1,0)
+    if (rotation === 0 || rotation === 180) {
+      return (dx === 0 && (dy === -1 || dy === 1));
+    } else {
+      return (dy === 0 && (dx === -1 || dx === 1));
+    }
+  }
+
+  // Check if tile at (x,y) connects toward direction (dx,dy)
+  function tileConnectsInDirection(world, x, y, dx, dy) {
+    var tile = getTile(world, x, y);
+    if (!tile) return false;
+    if (tile.type === 'road_crossroad') return true; // connects all directions
+    if (tile.type === 'road') return straightConnects(tile.rotation || 0, dx, dy);
+    if (tile.type === 'road_curved') return curveConnects(tile.rotation || 0, dx, dy);
+    return false;
+  }
+
+  function getConnectedRoads(world, x, y) {
+    var neighbors = [];
+    var dirs = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    for (var i = 0; i < dirs.length; i++) {
+      var dx = dirs[i][0], dy = dirs[i][1];
+      var nx = x + dx, ny = y + dy;
+      // Check: current tile connects outward in this direction
+      // AND neighbor tile connects back toward us
+      if (tileConnectsInDirection(world, x, y, dx, dy) &&
+          tileConnectsInDirection(world, nx, ny, -dx, -dy)) {
+        neighbors.push({ x: nx, y: ny });
+      }
+    }
+    return neighbors;
+  }
+
+  function bfsPath(world, startX, startY, endX, endY) {
+    if (startX === endX && startY === endY) return [{ x: startX, y: startY }];
+    if (!isRoad(world, startX, startY) || !isRoad(world, endX, endY)) return null;
+
+    var queue = [{ x: startX, y: startY }];
+    var visited = {};
+    var parent = {};
+    var key = function(x, y) { return x + ',' + y; };
+
+    visited[key(startX, startY)] = true;
+
+    while (queue.length > 0) {
+      var current = queue.shift();
+
+      if (current.x === endX && current.y === endY) {
+        // Reconstruct path
+        var path = [];
+        var node = current;
+        while (node) {
+          path.unshift({ x: node.x, y: node.y });
+          node = parent[key(node.x, node.y)];
+        }
+        return path;
+      }
+
+      var neighbors = getConnectedRoads(world, current.x, current.y);
+      for (var i = 0; i < neighbors.length; i++) {
+        var n = neighbors[i];
+        var nk = key(n.x, n.y);
+        if (!visited[nk]) {
+          visited[nk] = true;
+          parent[nk] = current;
+          queue.push(n);
+        }
+      }
+    }
+
+    return null; // No path found
+  }
+
+  // Find the nearest road tile to a given tile coordinate
+  function findNearestRoad(world, tx, ty) {
+    var best = null;
+    var bestDist = Infinity;
+    for (var i = 0; i < world.tiles.length; i++) {
+      var t = world.tiles[i];
+      if (t.type === 'road' || t.type === 'road_curved' || t.type === 'road_crossroad') {
+        var dx = t.x - tx;
+        var dy = t.y - ty;
+        var dist = dx * dx + dy * dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = t;
+        }
+      }
+    }
+    return best;
+  }
+
+  // ─── Car Movement ──────────────────────────────────────────
+
+  function startCarPath(path) {
+    if (!path || path.length < 2) return;
+    carPath = path;
+    carPathIndex = 0;
+    carProgress = 0;
+    carMoving = true;
+  }
+
+  function stopCar() {
+    carMoving = false;
+    carPath = [];
+    carPathIndex = 0;
+    carProgress = 0;
+  }
+
+  function updateCar(dt) {
+    if (!carMoving || carPath.length < 2) return;
+
+    // Look ahead: if the next tile on the path has a red light,
+    // stop on the current tile (the one before the crossroad).
+    if (carPathIndex < carPath.length - 1) {
+      var nextOnPath = carPath[carPathIndex + 1];
+      var light = getTrafficLightAt(nextOnPath.x, nextOnPath.y);
+      if (light && light.state === 'red' && carProgress >= 0.9) {
+        carProgress = 0.9;
+        return;
+      }
+    }
+
+    carProgress += dt * carSpeed;
+
+    while (carProgress >= 1 && carPathIndex < carPath.length - 2) {
+      carPathIndex++;
+      carProgress -= 1;
+
+      // Check if the next tile ahead has a red light — stop here if so
+      if (carPathIndex < carPath.length - 1) {
+        var aheadTile = carPath[carPathIndex + 1];
+        var light2 = getTrafficLightAt(aheadTile.x, aheadTile.y);
+        if (light2 && light2.state === 'red') {
+          carProgress = 0.9;
+          return;
+        }
+      }
+    }
+
+    if (carPathIndex >= carPath.length - 1) {
+      // Arrived at destination
+      var last = carPath[carPath.length - 1];
+      carPixelX = (last.x + 0.5) * TILE_SIZE;
+      carPixelY = (last.y + 0.5) * TILE_SIZE;
+      world.car.x = last.x;
+      world.car.y = last.y;
+      stopCar();
+      return;
+    }
+
+    // Interpolate position
+    var from = carPath[carPathIndex];
+    var to = carPath[carPathIndex + 1];
+    var t = Math.min(carProgress, 1);
+
+    // Smooth easing
+    // Use smoothstep for nicer motion
+    var st = t * t * (3 - 2 * t);
+
+    carPixelX = ((from.x + 0.5) + (to.x - from.x) * st) * TILE_SIZE;
+    carPixelY = ((from.y + 0.5) + (to.y - from.y) * st) * TILE_SIZE;
+
+    // Update angle based on direction
+    var dx = to.x - from.x;
+    var dy = to.y - from.y;
+    if (dx !== 0 || dy !== 0) {
+      var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+      carAngle = lerpAngle(carAngle, targetAngle, Math.min(1, dt * 10));
+    }
+
+    world.car.x = from.x;
+    world.car.y = from.y;
+    world.car.angle = carAngle;
+  }
+
+  function lerpAngle(a, b, t) {
+    var diff = ((b - a + 540) % 360) - 180;
+    return a + diff * t;
+  }
+
+  function getTrafficLightAt(x, y) {
+    for (var i = 0; i < world.interactives.length; i++) {
+      var inter = world.interactives[i];
+      if (inter.type === 'traffic_light' && inter.x === x && inter.y === y) {
+        return inter;
+      }
+    }
+    return null;
+  }
+
+  // ─── Touch / Pointer Handling ──────────────────────────────
+  var pointers = {};
+  var touchStartTime = 0;
+  var touchMoved = false;
+  var lastPanX = 0, lastPanY = 0;
+  var lastPinchDist = 0;
+  var lastPinchCX = 0, lastPinchCY = 0;
+  var isPanning = false;
+
+  function getPointerArray() {
+    var arr = [];
+    for (var id in pointers) arr.push(pointers[id]);
+    return arr;
+  }
+
+  function getPinchData(arr) {
+    var dx = arr[1].x - arr[0].x;
+    var dy = arr[1].y - arr[0].y;
+    return {
+      dist: Math.sqrt(dx * dx + dy * dy),
+      cx: (arr[0].x + arr[1].x) / 2,
+      cy: (arr[0].y + arr[1].y) / 2
+    };
+  }
+
+  function onPointerDown(e) {
+    if (e.target.closest('.ui-btn')) return;
+    e.preventDefault();
+
+    pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+    var pArr = getPointerArray();
+
+    if (pArr.length === 1) {
+      touchStartTime = Date.now();
+      touchMoved = false;
+      lastPanX = e.clientX;
+      lastPanY = e.clientY;
+      isPanning = false;
+    } else if (pArr.length >= 2) {
+      var pd = getPinchData(pArr);
+      lastPinchDist = pd.dist;
+      lastPinchCX = pd.cx;
+      lastPinchCY = pd.cy;
+      isPanning = true; // multi-touch = always pan/zoom
+    }
+  }
+
+  function onPointerMove(e) {
+    if (!pointers[e.pointerId]) return;
+    e.preventDefault();
+
+    pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+    var pArr = getPointerArray();
+
+    if (pArr.length === 1) {
+      var dx = e.clientX - lastPanX;
+      var dy = e.clientY - lastPanY;
+
+      if (!isPanning && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+        isPanning = true;
+        touchMoved = true;
+      }
+
+      if (isPanning) {
+        panX += dx;
+        panY += dy;
+        lastPanX = e.clientX;
+        lastPanY = e.clientY;
+      }
+    } else if (pArr.length >= 2) {
+      var pd = getPinchData(pArr);
+
+      // Zoom
+      var zoomRatio = pd.dist / lastPinchDist;
+      var newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * zoomRatio));
+
+      // Pan during pinch
+      var dCx = pd.cx - lastPinchCX;
+      var dCy = pd.cy - lastPinchCY;
+
+      panX = panX + dCx - (lastPinchCX - panX) * (newScale / scale - 1);
+      panY = panY + dCy - (lastPinchCY - panY) * (newScale / scale - 1);
+      scale = newScale;
+
+      lastPinchDist = pd.dist;
+      lastPinchCX = pd.cx;
+      lastPinchCY = pd.cy;
+
+      touchMoved = true;
+    }
+  }
+
+  function onPointerUp(e) {
+    if (!pointers[e.pointerId]) return;
+    e.preventDefault();
+
+    delete pointers[e.pointerId];
+
+    var elapsed = Date.now() - touchStartTime;
+    if (!touchMoved && elapsed < 400) {
+      handleTap(e.clientX, e.clientY);
+    }
+
+    // Reset pinch state for remaining pointers
+    var pArr = getPointerArray();
+    if (pArr.length >= 2) {
+      var pd = getPinchData(pArr);
+      lastPinchDist = pd.dist;
+      lastPinchCX = pd.cx;
+      lastPinchCY = pd.cy;
+    }
+  }
+
+  function onPointerCancel(e) {
+    delete pointers[e.pointerId];
+  }
+
+  function onWheel(e) {
+    e.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+
+    var zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+    var newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * zoomFactor));
+
+    panX = mx - (mx - panX) * (newScale / scale);
+    panY = my - (my - panY) * (newScale / scale);
+    scale = newScale;
+  }
+
+  // ─── Tap Handler ───────────────────────────────────────────
+
+  function handleTap(clientX, clientY) {
+    var tile = screenToTile(clientX, clientY);
+
+    // Check if tapped on a traffic light
+    var light = getTrafficLightAt(tile.x, tile.y);
+    if (light) {
+      cycleTrafficLight(light);
+      return;
+    }
+
+    // Navigate car to tapped location
+    navigateCarTo(tile.x, tile.y);
+  }
+
+  function cycleTrafficLight(light) {
+    var order = ['red', 'yellow', 'green'];
+    var idx = order.indexOf(light.state);
+    light.state = order[(idx + 1) % 3];
+    saveState();
+  }
+
+  function navigateCarTo(tx, ty) {
+    var startX = world.car.x;
+    var startY = world.car.y;
+
+    // If car is currently moving, use current position
+    if (carMoving && carPath.length > 0 && carPathIndex < carPath.length) {
+      startX = carPath[carPathIndex].x;
+      startY = carPath[carPathIndex].y;
+      // Snap car to this tile before re-pathfinding
+      world.car.x = startX;
+      world.car.y = startY;
+    }
+
+    var targetX = tx, targetY = ty;
+
+    // If target is not a road, find nearest road
+    if (!isRoad(world, tx, ty)) {
+      var nearest = findNearestRoad(world, tx, ty);
+      if (nearest) {
+        targetX = nearest.x;
+        targetY = nearest.y;
+      } else {
+        return; // No roads at all
+      }
+    }
+
+    var path = bfsPath(world, startX, startY, targetX, targetY);
+    if (path && path.length >= 2) {
+      stopCar();
+      startCarPath(path);
+    }
+  }
+
+  // ─── Persistence ───────────────────────────────────────────
+
+  function saveState() {
+    try {
+      var state = {
+        car: { x: world.car.x, y: world.car.y, angle: world.car.angle },
+        interactives: world.interactives.map(function(inter) {
+          return { x: inter.x, y: inter.y, type: inter.type, state: inter.state };
+        }),
+        isNight: isNight,
+        pan: { x: panX, y: panY },
+        scale: scale
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch(e) {}
+  }
+
+  function loadState() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      var state = JSON.parse(raw);
+
+      if (state.car) {
+        world.car.x = state.car.x;
+        world.car.y = state.car.y;
+        world.car.angle = state.car.angle || 0;
+      }
+      if (state.interactives) {
+        for (var i = 0; i < state.interactives.length; i++) {
+          var saved = state.interactives[i];
+          var inter = getTrafficLightAt(saved.x, saved.y);
+          if (inter) inter.state = saved.state;
+        }
+      }
+      if (typeof state.isNight === 'boolean') {
+        isNight = state.isNight;
+      }
+      if (state.pan) {
+        panX = state.pan.x;
+        panY = state.pan.y;
+      }
+      if (state.scale) {
+        scale = state.scale;
+      }
+
+      return true;
+    } catch(e) {
+      return false;
+    }
+  }
+
+  // ─── Day/Night ─────────────────────────────────────────────
+
+  function toggleDayNight() {
+    isNight = !isNight;
+    nightOverlay.classList.toggle('active', isNight);
+    document.getElementById('btn-daynight').textContent = isNight ? '🌙' : '☀️';
+    saveState();
+  }
+
+  // ─── Game Loop ─────────────────────────────────────────────
+
+  function gameLoop(timestamp) {
+    if (!lastTime) lastTime = timestamp;
+    var dt = Math.min((timestamp - lastTime) / 1000, 0.1); // cap at 100ms
+    lastTime = timestamp;
+
+    updateCar(dt);
+    render();
+
+    animFrameId = requestAnimationFrame(gameLoop);
+  }
+
+  // ─── Initialization ────────────────────────────────────────
+
+  function init() {
+    canvas = document.getElementById('world-canvas');
+    ctx = canvas.getContext('2d');
+    viewportEl = document.getElementById('viewport');
+    nightOverlay = document.getElementById('night-overlay');
+
+    resizeCanvas();
+
+    // Build world
+    world = buildDefaultWorld();
+
+    // Load saved state (or use defaults)
+    var loaded = loadState();
+
+    if (!loaded) {
+      // Center view on the car's starting position
+      var carCenterX = (world.car.x + 0.5) * TILE_SIZE;
+      var carCenterY = (world.car.y + 0.5) * TILE_SIZE;
+
+      // Fit nicely in portrait mode
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+      scale = Math.min(vw / (10 * TILE_SIZE), vh / (14 * TILE_SIZE), 1.2);
+
+      panX = vw / 2 - carCenterX * scale;
+      panY = vh / 2 - carCenterY * scale;
+    }
+
+    // Initialize car pixel position
+    carPixelX = (world.car.x + 0.5) * TILE_SIZE;
+    carPixelY = (world.car.y + 0.5) * TILE_SIZE;
+    carAngle = world.car.angle || 90;
+
+    // Apply night state
+    if (isNight) {
+      nightOverlay.classList.add('active');
+      document.getElementById('btn-daynight').textContent = '🌙';
+    }
+
+    // Event listeners
+    viewportEl.addEventListener('pointerdown', onPointerDown, { passive: false });
+    viewportEl.addEventListener('pointermove', onPointerMove, { passive: false });
+    viewportEl.addEventListener('pointerup', onPointerUp, { passive: false });
+    viewportEl.addEventListener('pointercancel', onPointerCancel);
+    viewportEl.addEventListener('wheel', onWheel, { passive: false });
+
+    // Prevent default touch behaviors (browser zoom, scroll)
+    document.addEventListener('touchstart', function(e) {
+      if (!e.target.closest('.ui-btn')) e.preventDefault();
+    }, { passive: false });
+    document.addEventListener('touchmove', function(e) {
+      e.preventDefault();
+    }, { passive: false });
+    document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
+
+    // UI buttons
+    document.getElementById('btn-daynight').addEventListener('pointerdown', function(e) {
+      e.stopPropagation();
+    });
+    document.getElementById('btn-daynight').addEventListener('click', function(e) {
+      e.stopPropagation();
+      toggleDayNight();
+    });
+
+    // Window resize
+    window.addEventListener('resize', resizeCanvas);
+
+    // Save state periodically
+    setInterval(saveState, 5000);
+
+    // Save on page hide
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) saveState();
+    });
+
+    // Start game loop
+    lastTime = 0;
+    animFrameId = requestAnimationFrame(gameLoop);
+  }
+
+  // ─── Boot ──────────────────────────────────────────────────
+  loadAssets(init);
+
+})();
+</script>
+</body>
+</html>
