@@ -53,66 +53,9 @@ canvas {
   pointer-events: none;
 }
 
-.ui-btn {
-  pointer-events: auto;
-  width: 52px; height: 52px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(0,0,0,0.5);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  color: white;
-  font-size: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: transform 0.12s ease, background 0.15s ease;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.ui-btn:active {
-  transform: scale(0.9);
-  background: rgba(0,0,0,0.7);
-}
-
-#btn-group-right {
-  position: absolute;
-  bottom: 32px; right: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-#btn-group-left {
-  position: absolute;
-  bottom: 32px; left: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-/* Night overlay */
-#night-overlay {
-  position: fixed;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  background: rgba(10, 15, 40, 0.55);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 1s ease;
-  z-index: 50;
-}
-
-#night-overlay.active {
-  opacity: 1;
-}
-
 /* Safe area insets for notched devices */
 @supports (padding-top: env(safe-area-inset-top)) {
   #app-title { top: calc(8px + env(safe-area-inset-top)); }
-  #btn-group-right { bottom: calc(32px + env(safe-area-inset-bottom)); right: calc(16px + env(safe-area-inset-right)); }
-  #btn-group-left { bottom: calc(32px + env(safe-area-inset-bottom)); left: calc(16px + env(safe-area-inset-left)); }
 }
 </style>
 </head>
@@ -122,13 +65,8 @@ canvas {
   <canvas id="world-canvas"></canvas>
 </div>
 
-<div id="night-overlay"></div>
-
 <div id="ui">
   <div id="app-title">Taschenspielplatz</div>
-  <div id="btn-group-right">
-    <button class="ui-btn" id="btn-daynight" aria-label="Tag/Nacht">☀️</button>
-  </div>
 </div>
 
 <script>
@@ -137,7 +75,7 @@ canvas {
 
   // ─── Constants ─────────────────────────────────────────────
   var TILE_SIZE = 128;
-  var STORAGE_KEY = 'taschenspielplatz_v2';
+  var STORAGE_KEY = 'taschenspielplatz_v4';
   var RENDER_BUFFER = 2;
 
   // ─── Asset Loading ─────────────────────────────────────────
@@ -295,19 +233,6 @@ canvas {
     setTile(world, 4, 10, 'road_tjunction', 180);  // E + S + W (open North)
     road(4, 11, 0); road(4, 12, 0);
 
-    // ── Add traffic lights at all crossroads and T-junctions ──
-    world.interactives = [];
-    for (var i = 0; i < world.tiles.length; i++) {
-      if (world.tiles[i].type === 'road_crossroad' || world.tiles[i].type === 'road_tjunction') {
-        world.interactives.push({
-          x: world.tiles[i].x,
-          y: world.tiles[i].y,
-          type: 'traffic_light',
-          state: 'green'
-        });
-      }
-    }
-
     // ── Place 5 vehicles ──
     world.vehicles = [
       { id: 'car1', type: 'car', x: 5,  y: 3,  angle: 90,  speed: 1.0, hue: 0 },
@@ -327,8 +252,6 @@ canvas {
   var viewportEl;
   var panX = 0, panY = 0, scale = 1;
   var MIN_SCALE = 0.3, MAX_SCALE = 3;
-  var isNight = false;
-  var nightOverlay;
 
   // Per-vehicle animation state, keyed by vehicle id
   var vehicleAnim = {};
@@ -366,13 +289,56 @@ canvas {
     if (hue === 0) return assets.car;
     if (hueCache[hue]) return hueCache[hue];
 
-    // Create offscreen canvas, apply hue-rotate
+    // Manual pixel-level hue rotation (works on iOS Safari and Firefox)
+    var w = assets.car.width;
+    var h = assets.car.height;
     var oc = document.createElement('canvas');
-    oc.width = assets.car.width;
-    oc.height = assets.car.height;
+    oc.width = w;
+    oc.height = h;
     var octx = oc.getContext('2d');
-    octx.filter = 'hue-rotate(' + hue + 'deg)';
     octx.drawImage(assets.car, 0, 0);
+
+    var imageData = octx.getImageData(0, 0, w, h);
+    var d = imageData.data;
+    var shift = ((hue % 360) + 360) % 360;
+
+    for (var i = 0; i < d.length; i += 4) {
+      if (d[i + 3] === 0) continue; // skip transparent
+
+      var r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+      var max = Math.max(r, g, b), min = Math.min(r, g, b);
+      var delta = max - min;
+      var hVal, s, l = (max + min) / 2;
+
+      if (delta === 0) continue; // grey pixel, no hue to shift
+
+      s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+
+      if (max === r) hVal = ((g - b) / delta + (g < b ? 6 : 0)) * 60;
+      else if (max === g) hVal = ((b - r) / delta + 2) * 60;
+      else hVal = ((r - g) / delta + 4) * 60;
+
+      hVal = (hVal + shift) % 360;
+
+      // HSL to RGB
+      var c = (1 - Math.abs(2 * l - 1)) * s;
+      var x = c * (1 - Math.abs((hVal / 60) % 2 - 1));
+      var m = l - c / 2;
+      var r1, g1, b1;
+
+      if (hVal < 60)       { r1 = c; g1 = x; b1 = 0; }
+      else if (hVal < 120) { r1 = x; g1 = c; b1 = 0; }
+      else if (hVal < 180) { r1 = 0; g1 = c; b1 = x; }
+      else if (hVal < 240) { r1 = 0; g1 = x; b1 = c; }
+      else if (hVal < 300) { r1 = x; g1 = 0; b1 = c; }
+      else                 { r1 = c; g1 = 0; b1 = x; }
+
+      d[i]     = Math.round((r1 + m) * 255);
+      d[i + 1] = Math.round((g1 + m) * 255);
+      d[i + 2] = Math.round((b1 + m) * 255);
+    }
+
+    octx.putImageData(imageData, 0, 0);
     hueCache[hue] = oc;
     return oc;
   }
@@ -460,14 +426,6 @@ canvas {
       }
     }
 
-    // Draw traffic lights
-    for (var i = 0; i < world.interactives.length; i++) {
-      var inter = world.interactives[i];
-      if (inter.type !== 'traffic_light') continue;
-      if (inter.x < startCol || inter.x > endCol || inter.y < startRow || inter.y > endRow) continue;
-      drawTrafficLight(inter);
-    }
-
     // Draw vehicles (inactive first, active last so it's on top)
     for (var vi = 0; vi < world.vehicles.length; vi++) {
       var v = world.vehicles[vi];
@@ -477,63 +435,6 @@ canvas {
     // Draw active vehicle last (on top)
     var activeV = getActiveVehicle();
     if (activeV) drawVehicle(activeV, true);
-  }
-
-  function drawTrafficLight(light) {
-    var cx = light.x * TILE_SIZE * scale + panX + (TILE_SIZE * scale) / 2;
-    var cy = light.y * TILE_SIZE * scale + panY + (TILE_SIZE * scale) / 2;
-
-    var r = Math.max(6, 10 * scale);
-    var boxW = r * 2.4;
-    var boxH = r * 6.5;
-
-    // Background box
-    ctx.fillStyle = '#333';
-    ctx.beginPath();
-    var bx = cx - boxW / 2, by = cy - boxH / 2, br = r * 0.4;
-    ctx.moveTo(bx + br, by);
-    ctx.lineTo(bx + boxW - br, by);
-    ctx.arcTo(bx + boxW, by, bx + boxW, by + br, br);
-    ctx.lineTo(bx + boxW, by + boxH - br);
-    ctx.arcTo(bx + boxW, by + boxH, bx + boxW - br, by + boxH, br);
-    ctx.lineTo(bx + br, by + boxH);
-    ctx.arcTo(bx, by + boxH, bx, by + boxH - br, br);
-    ctx.lineTo(bx, by + br);
-    ctx.arcTo(bx, by, bx + br, by, br);
-    ctx.closePath();
-    ctx.fill();
-
-    // Border
-    ctx.strokeStyle = '#555';
-    ctx.lineWidth = Math.max(1, 1.5 * scale);
-    ctx.stroke();
-
-    // Lights
-    var colors = ['red', 'yellow', 'green'];
-    var lightColors = {
-      red: { on: '#ff3333', off: '#661111' },
-      yellow: { on: '#ffcc00', off: '#665500' },
-      green: { on: '#33dd33', off: '#116611' }
-    };
-
-    for (var j = 0; j < 3; j++) {
-      var color = colors[j];
-      var isOn = light.state === color;
-      ctx.fillStyle = isOn ? lightColors[color].on : lightColors[color].off;
-      ctx.beginPath();
-      ctx.arc(cx, cy - (1 - j) * r * 2 + r, r * 0.7, 0, Math.PI * 2);
-      ctx.fill();
-
-      if (isOn) {
-        ctx.save();
-        ctx.globalAlpha = 0.3;
-        ctx.fillStyle = lightColors[color].on;
-        ctx.beginPath();
-        ctx.arc(cx, cy - (1 - j) * r * 2 + r, r * 1.2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      }
-    }
   }
 
   function drawVehicle(v, isActive) {
@@ -785,31 +686,11 @@ canvas {
 
     var speed = 3 * (v.speed || 1);
 
-    // Look ahead: if the next tile on the path has a red light,
-    // stop on the current tile.
-    if (anim.pathIndex < anim.path.length - 1) {
-      var nextOnPath = anim.path[anim.pathIndex + 1];
-      var light = getTrafficLightAt(nextOnPath.x, nextOnPath.y);
-      if (light && light.state === 'red' && anim.progress >= 0.9) {
-        anim.progress = 0.9;
-        return;
-      }
-    }
-
     anim.progress += dt * speed;
 
     while (anim.progress >= 1 && anim.pathIndex < anim.path.length - 2) {
       anim.pathIndex++;
       anim.progress -= 1;
-
-      if (anim.pathIndex < anim.path.length - 1) {
-        var aheadTile = anim.path[anim.pathIndex + 1];
-        var light2 = getTrafficLightAt(aheadTile.x, aheadTile.y);
-        if (light2 && light2.state === 'red') {
-          anim.progress = 0.9;
-          return;
-        }
-      }
     }
 
     if (anim.pathIndex >= anim.path.length - 1) {
@@ -862,16 +743,6 @@ canvas {
   function lerpAngle(a, b, t) {
     var diff = ((b - a + 540) % 360) - 180;
     return a + diff * t;
-  }
-
-  function getTrafficLightAt(x, y) {
-    for (var i = 0; i < world.interactives.length; i++) {
-      var inter = world.interactives[i];
-      if (inter.type === 'traffic_light' && inter.x === x && inter.y === y) {
-        return inter;
-      }
-    }
-    return null;
   }
 
   // ─── Touch / Pointer Handling ──────────────────────────────
@@ -1009,7 +880,7 @@ canvas {
   }
 
   // ─── Tap Handler ───────────────────────────────────────────
-  // Priority: Vehicle tap > Traffic light tap > World tap
+  // Priority: Vehicle tap > World tap
 
   function handleTap(clientX, clientY) {
     // 1. Check if tapped on a vehicle
@@ -1019,15 +890,8 @@ canvas {
       return;
     }
 
-    // 2. Check if tapped on a traffic light
+    // 2. Navigate active vehicle to tapped location
     var tile = screenToTile(clientX, clientY);
-    var light = getTrafficLightAt(tile.x, tile.y);
-    if (light) {
-      cycleTrafficLight(light);
-      return;
-    }
-
-    // 3. Navigate active vehicle to tapped location
     navigateActiveVehicleTo(tile.x, tile.y);
   }
 
@@ -1057,13 +921,6 @@ canvas {
       cameraFollowing = true;
     }
 
-    saveState();
-  }
-
-  function cycleTrafficLight(light) {
-    var order = ['red', 'yellow', 'green'];
-    var idx = order.indexOf(light.state);
-    light.state = order[(idx + 1) % 3];
     saveState();
   }
 
@@ -1117,10 +974,6 @@ canvas {
       var state = {
         vehicles: vehicleStates,
         activeVehicleId: world.activeVehicleId,
-        interactives: world.interactives.map(function(inter) {
-          return { x: inter.x, y: inter.y, type: inter.type, state: inter.state };
-        }),
-        isNight: isNight,
         pan: { x: panX, y: panY },
         scale: scale
       };
@@ -1150,16 +1003,6 @@ canvas {
         world.activeVehicleId = state.activeVehicleId;
       }
 
-      if (state.interactives) {
-        for (var j = 0; j < state.interactives.length; j++) {
-          var savedInter = state.interactives[j];
-          var inter = getTrafficLightAt(savedInter.x, savedInter.y);
-          if (inter) inter.state = savedInter.state;
-        }
-      }
-      if (typeof state.isNight === 'boolean') {
-        isNight = state.isNight;
-      }
       if (state.pan) {
         panX = state.pan.x;
         panY = state.pan.y;
@@ -1172,15 +1015,6 @@ canvas {
     } catch(e) {
       return false;
     }
-  }
-
-  // ─── Day/Night ─────────────────────────────────────────────
-
-  function toggleDayNight() {
-    isNight = !isNight;
-    nightOverlay.classList.toggle('active', isNight);
-    document.getElementById('btn-daynight').textContent = isNight ? '🌙' : '☀️';
-    saveState();
   }
 
   // ─── Game Loop ─────────────────────────────────────────────
@@ -1238,7 +1072,6 @@ canvas {
     canvas = document.getElementById('world-canvas');
     ctx = canvas.getContext('2d');
     viewportEl = document.getElementById('viewport');
-    nightOverlay = document.getElementById('night-overlay');
 
     resizeCanvas();
 
@@ -1281,12 +1114,6 @@ canvas {
       }
     }
 
-    // Apply night state
-    if (isNight) {
-      nightOverlay.classList.add('active');
-      document.getElementById('btn-daynight').textContent = '🌙';
-    }
-
     // Event listeners
     viewportEl.addEventListener('pointerdown', onPointerDown, { passive: false });
     viewportEl.addEventListener('pointermove', onPointerMove, { passive: false });
@@ -1301,15 +1128,6 @@ canvas {
       e.preventDefault();
     }, { passive: false });
     document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
-
-    // UI buttons
-    document.getElementById('btn-daynight').addEventListener('pointerdown', function(e) {
-      e.stopPropagation();
-    });
-    document.getElementById('btn-daynight').addEventListener('click', function(e) {
-      e.stopPropagation();
-      toggleDayNight();
-    });
 
     window.addEventListener('resize', resizeCanvas);
 
