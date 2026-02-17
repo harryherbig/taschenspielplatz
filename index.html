@@ -12,7 +12,7 @@
 html, body {
   width: 100%; height: 100%;
   overflow: hidden;
-  background: #2a5a1e;
+  background: #1a3a0a;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   touch-action: none;
   user-select: none;
@@ -20,55 +20,854 @@ html, body {
   -webkit-touch-callout: none;
 }
 
-#viewport {
-  position: fixed;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
+/* ---- Start Screen ---- */
+#start-screen {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #2d5016 0%, #1a3a0a 50%, #0f2205 100%);
+  z-index: 200;
+  transition: opacity 0.4s ease;
+}
+#start-screen.hidden { opacity: 0; pointer-events: none; }
+
+#start-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.85);
+  letter-spacing: 1px;
+  margin-bottom: 40px;
+}
+
+.world-card {
+  width: 260px;
+  cursor: pointer;
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.world-card:active {
+  transform: scale(0.96);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+.world-card-thumb {
+  width: 100%;
+  aspect-ratio: 4/3;
+  background: #3a7a20;
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
   overflow: hidden;
 }
-
-canvas {
-  position: absolute;
-  top: 0; left: 0;
-  image-rendering: auto;
+.world-card-thumb canvas {
+  width: 100%; height: 100%;
+  object-fit: cover;
 }
 
-/* UI Layer */
-#ui {
-  position: fixed;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
+.world-card-name {
+  padding: 14px;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
+}
+
+/* ---- Game Screen ---- */
+#game-screen {
+  position: fixed; inset: 0;
+  display: none;
+  overflow: hidden;
+  background: #2a5a1e;
+}
+#game-screen.active { display: block; }
+
+#game-canvas {
+  position: absolute; top: 0; left: 0;
+}
+
+/* Night overlay — only darkens the canvas behind, vehicles stay bright via z-order trick:
+   we render vehicles AFTER the overlay in the canvas draw order, so they stay bright.
+   Actually we use a CSS overlay that covers the world but we render vehicles on top.
+   Simpler: overlay with mix-blend-mode that darkens background but we draw vehicles bright.
+   Simplest: just darken the entire canvas via CSS filter and brighten vehicles in draw code.
+   Going with CSS overlay approach: overlay sits between canvas and UI. */
+#night-overlay {
+  position: absolute; inset: 0;
+  background: rgba(10, 10, 40, 0.55);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.8s ease;
+  z-index: 5;
+  mix-blend-mode: multiply;
+}
+#night-overlay.active { opacity: 1; }
+
+/* UI overlay */
+#game-ui {
+  position: fixed; inset: 0;
   pointer-events: none;
   z-index: 100;
 }
 
-#app-title {
+#app-title-small {
   position: absolute;
   top: 8px; left: 0; right: 0;
   text-align: center;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  color: rgba(255,255,255,0.5);
+  color: rgba(255,255,255,0.25);
   pointer-events: none;
 }
 
-/* Safe area insets for notched devices */
+.ui-btn {
+  pointer-events: auto;
+  width: 52px; height: 52px;
+  border: none;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.15);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: white;
+  font-size: 22px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+  transition: background 0.15s;
+}
+.ui-btn:active { background: rgba(255,255,255,0.25); }
+
+#btn-back {
+  position: absolute;
+  top: 12px; left: 12px;
+}
+#btn-daynight {
+  position: absolute;
+  top: 12px; right: 12px;
+}
+
 @supports (padding-top: env(safe-area-inset-top)) {
-  #app-title { top: calc(8px + env(safe-area-inset-top)); }
+  #app-title-small { top: calc(8px + env(safe-area-inset-top)); }
+  #btn-back { top: calc(12px + env(safe-area-inset-top)); left: calc(12px + env(safe-area-inset-left)); }
+  #btn-daynight { top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right)); }
 }
 </style>
 </head>
 <body>
 
-<div id="viewport">
-  <canvas id="world-canvas"></canvas>
+<!-- Start Screen -->
+<div id="start-screen">
+  <div id="start-title">Taschenspielplatz</div>
+  <div id="world-list"></div>
 </div>
 
-<div id="ui">
-  <div id="app-title">Taschenspielplatz</div>
+<!-- Game Screen -->
+<div id="game-screen">
+  <canvas id="game-canvas"></canvas>
+  <div id="night-overlay"></div>
+  <div id="game-ui">
+    <div id="app-title-small">Taschenspielplatz</div>
+    <button class="ui-btn" id="btn-back" aria-label="Zurück">&#x2190;</button>
+    <button class="ui-btn" id="btn-daynight" aria-label="Tag/Nacht">&#x2600;</button>
+  </div>
 </div>
 
-<script type="module" src="/src/main.ts"></script>
+<script>
+'use strict';
+
+// ============================================================
+// CONFIG
+// ============================================================
+
+const STORAGE_KEY = 'taschenspielplatz_v5';
+const MIN_SCALE = 0.25;
+const MAX_SCALE = 3;
+const WORLD_W = 2400;
+const WORLD_H = 2400;
+
+// Vehicle types: speed in world-pixels per second
+const VEHICLE_DEFS = [
+  { id: 'v-auto',         type: 'auto',         hue: 0,   speed: 340, startX: 620,  startY: 420  },
+  { id: 'v-feuerwehr',    type: 'feuerwehr',    hue: 0,   speed: 270, startX: 1220, startY: 820  },
+  { id: 'v-krankenwagen', type: 'krankenwagen', hue: 200, speed: 290, startX: 1820, startY: 420  },
+  { id: 'v-bagger',       type: 'bagger',       hue: 45,  speed: 130, startX: 520,  startY: 1620 },
+  { id: 'v-abschlepper',  type: 'abschlepper',  hue: 280, speed: 200, startX: 1620, startY: 1820 },
+];
+
+const WORLDS = [
+  { id: 'world1', name: 'Stadtpark', image: 'assets/world1.png' },
+];
+
+// ============================================================
+// PLACEHOLDER WORLD
+// ============================================================
+
+function generatePlaceholderWorld(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+
+  // Grass
+  ctx.fillStyle = '#4a8c2a';
+  ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 300; i++) {
+    ctx.fillStyle = 'rgba(' + (50 + (Math.random()*30|0)) + ',' + (120 + (Math.random()*40|0)) + ',' + (20 + (Math.random()*20|0)) + ',0.35)';
+    ctx.fillRect(Math.random()*w, Math.random()*h, 20+Math.random()*80, 20+Math.random()*80);
+  }
+
+  // Roads
+  const roadW = 100;
+  const hRoads = [400, 1200, 2000];
+  const vRoads = [600, 1200, 1800];
+
+  function drawRoad(x, y, rw, rh) {
+    ctx.fillStyle = '#666';
+    ctx.fillRect(x, y, rw, rh);
+  }
+
+  for (const ry of hRoads) {
+    drawRoad(0, ry - roadW/2, w, roadW);
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([20, 20]);
+    ctx.beginPath(); ctx.moveTo(0, ry); ctx.lineTo(w, ry); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  for (const rx of vRoads) {
+    drawRoad(rx - roadW/2, 0, roadW, h);
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([20, 20]);
+    ctx.beginPath(); ctx.moveTo(rx, 0); ctx.lineTo(rx, h); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Buildings
+  const buildings = [
+    {x:150,y:150,w:180,h:140,color:'#c0392b'},{x:800,y:150,w:200,h:160,color:'#2980b9'},
+    {x:1400,y:150,w:160,h:130,color:'#8e44ad'},{x:2000,y:150,w:170,h:150,color:'#d35400'},
+    {x:150,y:600,w:200,h:180,color:'#27ae60'},{x:800,y:550,w:240,h:200,color:'#f39c12'},
+    {x:1400,y:600,w:180,h:160,color:'#1abc9c'},{x:2000,y:580,w:200,h:180,color:'#e74c3c'},
+    {x:150,y:1400,w:220,h:180,color:'#3498db'},{x:800,y:1450,w:180,h:160,color:'#e67e22'},
+    {x:1400,y:1400,w:200,h:190,color:'#9b59b6'},{x:2000,y:1430,w:190,h:170,color:'#16a085'},
+    {x:300,y:2100,w:160,h:140,color:'#c0392b'},{x:900,y:2120,w:180,h:160,color:'#2c3e50'},
+    {x:1500,y:2080,w:200,h:180,color:'#d35400'},
+  ];
+  for (const b of buildings) {
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.fillRect(b.x+6, b.y+6, b.w, b.h);
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(b.x, b.y, b.w, 12);
+    ctx.fillStyle = 'rgba(255,255,200,0.6)';
+    for (let wx = b.x+20; wx < b.x+b.w-20; wx += 35) {
+      for (let wy = b.y+30; wy < b.y+b.h-20; wy += 35) {
+        ctx.fillRect(wx, wy, 20, 20);
+      }
+    }
+  }
+
+  // Trees
+  for (let i = 0; i < 50; i++) {
+    const tx = 50+Math.random()*(w-100);
+    const ty = 50+Math.random()*(h-100);
+    if (hRoads.some(function(ry){return Math.abs(ty-ry)<70;})) continue;
+    if (vRoads.some(function(rx){return Math.abs(tx-rx)<70;})) continue;
+    if (buildings.some(function(b){return tx>b.x-10&&tx<b.x+b.w+10&&ty>b.y-10&&ty<b.y+b.h+10;})) continue;
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.beginPath(); ctx.ellipse(tx+4, ty+4, 22, 18, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'hsl('+(110+Math.random()*30)+','+(50+Math.random()*20)+'%,'+(28+Math.random()*15)+'%)';
+    ctx.beginPath(); ctx.ellipse(tx, ty, 18+Math.random()*10, 14+Math.random()*8, 0, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Roundabout center
+  ctx.fillStyle = '#666';
+  ctx.beginPath(); ctx.arc(1200,1200,120,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#4a8c2a';
+  ctx.beginPath(); ctx.arc(1200,1200,60,0,Math.PI*2); ctx.fill();
+
+  // Pond
+  ctx.fillStyle = '#3498db';
+  ctx.beginPath(); ctx.ellipse(1900,1050,90,60,0.2,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.15)';
+  ctx.beginPath(); ctx.ellipse(1880,1035,40,20,0.3,0,Math.PI*2); ctx.fill();
+
+  return c;
+}
+
+// ============================================================
+// CAR SPRITE FALLBACK
+// ============================================================
+
+function generateCarSprite() {
+  const c = document.createElement('canvas');
+  c.width = 60; c.height = 90;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#e74c3c';
+  ctx.beginPath(); ctx.roundRect(8, 10, 44, 70, 8); ctx.fill();
+  ctx.fillStyle = 'rgba(150,200,255,0.7)';
+  ctx.fillRect(14, 18, 32, 18);
+  ctx.fillStyle = 'rgba(150,200,255,0.5)';
+  ctx.fillRect(14, 58, 32, 14);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(4,20,8,16); ctx.fillRect(48,20,8,16);
+  ctx.fillRect(4,54,8,16); ctx.fillRect(48,54,8,16);
+  return c;
+}
+
+// ============================================================
+// HUE ROTATION (via canvas filter — no getImageData needed)
+// ============================================================
+
+// ============================================================
+// STATE
+// ============================================================
+
+var currentScreen = 'start';
+
+var gameState = {
+  panX: 0, panY: 0, scale: 1,
+  isNight: false,
+  activeVehicleId: null,
+  cameraFollowing: false,
+  pulseTime: 0,
+  vehicles: [],
+};
+
+// ============================================================
+// ASSETS
+// ============================================================
+
+var carSprite = null;
+var worldImage = null;
+
+function loadCarSprite() {
+  return new Promise(function(resolve) {
+    var img = new Image();
+    img.onload = function() {
+      var c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      c.getContext('2d').drawImage(img, 0, 0);
+      carSprite = c;
+      resolve();
+    };
+    img.onerror = function() {
+      carSprite = generateCarSprite();
+      resolve();
+    };
+    img.src = 'assets/car.png';
+  });
+}
+
+function loadWorldImage(worldDef) {
+  return new Promise(function(resolve) {
+    var img = new Image();
+    img.onload = function() {
+      worldImage = img;
+      resolve();
+    };
+    img.onerror = function() {
+      worldImage = generatePlaceholderWorld(WORLD_W, WORLD_H);
+      resolve();
+    };
+    img.src = worldDef.image;
+  });
+}
+
+// ============================================================
+// VEHICLES
+// ============================================================
+
+function createVehicle(def) {
+  return {
+    id: def.id, type: def.type, hue: def.hue, speed: def.speed,
+    x: def.startX, y: def.startY, angle: 0,
+    targetX: null, targetY: null,
+    moving: false, dragging: false,
+  };
+}
+
+function initVehicles() {
+  gameState.vehicles = VEHICLE_DEFS.map(createVehicle);
+  gameState.activeVehicleId = null;
+}
+
+// ============================================================
+// PERSISTENCE
+// ============================================================
+
+function saveGameState() {
+  try {
+    var data = {
+      vehicles: gameState.vehicles.map(function(v) {
+        return { id: v.id, x: v.x, y: v.y, angle: v.angle };
+      }),
+      activeVehicleId: gameState.activeVehicleId,
+      pan: { x: gameState.panX, y: gameState.panY },
+      scale: gameState.scale,
+      isNight: gameState.isNight,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch(e) {}
+}
+
+function loadGameState() {
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    var data = JSON.parse(raw);
+    if (data.vehicles && data.vehicles.length === gameState.vehicles.length) {
+      for (var i = 0; i < data.vehicles.length; i++) {
+        var sv = data.vehicles[i];
+        var v = gameState.vehicles.find(function(vv) { return vv.id === sv.id; });
+        if (v) { v.x = sv.x; v.y = sv.y; v.angle = sv.angle || 0; }
+      }
+    }
+    if (data.activeVehicleId != null) gameState.activeVehicleId = data.activeVehicleId;
+    if (data.pan) { gameState.panX = data.pan.x; gameState.panY = data.pan.y; }
+    if (data.scale) gameState.scale = data.scale;
+    if (data.isNight != null) gameState.isNight = data.isNight;
+    return true;
+  } catch(e) { return false; }
+}
+
+// ============================================================
+// RENDERING
+// ============================================================
+
+var canvas = document.getElementById('game-canvas');
+var ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+
+function lerpAngle(a, b, t) {
+  var diff = ((b - a + 540) % 360) - 180;
+  return a + diff * t;
+}
+
+function drawVehicle(v, isActive) {
+  if (!carSprite) return;
+  var sprite = carSprite;
+  var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
+
+  var sx = v.x * scale + panX;
+  var sy = v.y * scale + panY;
+  var carW = 50 * scale;
+  var carH = 70 * scale;
+  var rotRad = (v.angle - 90) * Math.PI / 180;
+
+  if (isActive) {
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(rotRad);
+    var pulse = 0.35 + 0.25 * Math.sin(gameState.pulseTime * 3);
+    ctx.shadowColor = 'rgba(255, 255, 100, ' + pulse + ')';
+    ctx.shadowBlur = Math.max(16, 28 * scale);
+    ctx.fillStyle = 'rgba(255, 255, 100, 0.01)';
+    ctx.fillRect(-carW/2-4, -carH/2-4, carW+8, carH+8);
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(rotRad);
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  ctx.shadowBlur = Math.max(4, 8 * scale);
+  ctx.shadowOffsetX = 3 * scale;
+  ctx.shadowOffsetY = 4 * scale;
+  if (v.hue !== 0) ctx.filter = 'hue-rotate(' + v.hue + 'deg)';
+  ctx.drawImage(sprite, -carW/2, -carH/2, carW, carH);
+  ctx.restore();
+}
+
+function render() {
+  var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
+  var cw = canvas.width, ch = canvas.height;
+
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.fillStyle = '#4a8c2a';
+  ctx.fillRect(0, 0, cw, ch);
+
+  if (worldImage) {
+    var imgW = (worldImage.width || WORLD_W) * scale;
+    var imgH = (worldImage.height || WORLD_H) * scale;
+    ctx.drawImage(worldImage, panX, panY, imgW, imgH);
+  }
+
+  // Inactive vehicles first
+  for (var i = 0; i < gameState.vehicles.length; i++) {
+    var v = gameState.vehicles[i];
+    if (v.id === gameState.activeVehicleId) continue;
+    drawVehicle(v, false);
+  }
+  // Active vehicle on top
+  var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
+  if (activeV) drawVehicle(activeV, true);
+}
+
+// ============================================================
+// VEHICLE MOVEMENT
+// ============================================================
+
+function updateVehicles(dt) {
+  for (var i = 0; i < gameState.vehicles.length; i++) {
+    var v = gameState.vehicles[i];
+    if (!v.moving && !v.dragging) continue;
+    if (v.targetX == null || v.targetY == null) { v.moving = false; continue; }
+
+    var dx = v.targetX - v.x;
+    var dy = v.targetY - v.y;
+    var dist = Math.sqrt(dx*dx + dy*dy);
+
+    if (dist < 2) {
+      v.x = v.targetX; v.y = v.targetY;
+      v.moving = false; v.targetX = null; v.targetY = null;
+      continue;
+    }
+
+    // Smooth rotation toward target
+    var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    var angleDiff = Math.abs(((targetAngle - v.angle + 540) % 360) - 180);
+    var rotT = Math.min(1, 8 * dt);
+    v.angle = lerpAngle(v.angle, targetAngle, rotT);
+
+    // Move
+    var moveAmount = v.speed * dt;
+    if (moveAmount >= dist) {
+      v.x = v.targetX; v.y = v.targetY;
+      v.moving = false; v.targetX = null; v.targetY = null;
+    } else {
+      v.x += (dx / dist) * moveAmount;
+      v.y += (dy / dist) * moveAmount;
+    }
+  }
+}
+
+function cameraFollowActive(dt) {
+  if (!gameState.cameraFollowing) return;
+  var v = gameState.vehicles.find(function(vv) { return vv.id === gameState.activeVehicleId; });
+  if (!v) { gameState.cameraFollowing = false; return; }
+
+  var sx = v.x * gameState.scale + gameState.panX;
+  var sy = v.y * gameState.scale + gameState.panY;
+  var cw = canvas.width, ch = canvas.height;
+  var marginX = cw * 0.3, marginY = ch * 0.3;
+
+  if (sx < marginX || sx > cw - marginX || sy < marginY || sy > ch - marginY) {
+    var targetPanX = cw/2 - v.x * gameState.scale;
+    var targetPanY = ch/2 - v.y * gameState.scale;
+    var ease = Math.min(1, dt * 2.5);
+    gameState.panX += (targetPanX - gameState.panX) * ease;
+    gameState.panY += (targetPanY - gameState.panY) * ease;
+  }
+
+  if (!v.moving && !v.dragging) {
+    gameState.cameraFollowing = false;
+  }
+}
+
+// ============================================================
+// INPUT
+// ============================================================
+
+var pointers = {};
+var touchStartTime = 0;
+var touchMoved = false;
+var lastPanX = 0, lastPanY = 0;
+var lastPinchDist = 0, lastPinchCX = 0, lastPinchCY = 0;
+var isPanning = false;
+var tapStartX = 0, tapStartY = 0;
+
+function getPointerArray() { return Object.values(pointers); }
+
+function getPinchData(arr) {
+  var dx = arr[1].x - arr[0].x, dy = arr[1].y - arr[0].y;
+  return { dist: Math.sqrt(dx*dx+dy*dy), cx: (arr[0].x+arr[1].x)/2, cy: (arr[0].y+arr[1].y)/2 };
+}
+
+function screenToWorld(sx, sy) {
+  return { x: (sx - gameState.panX) / gameState.scale, y: (sy - gameState.panY) / gameState.scale };
+}
+
+function getVehicleAtScreen(clientX, clientY) {
+  var wp = screenToWorld(clientX, clientY);
+  var best = null, bestDist = Infinity;
+  var threshold = 60;
+  for (var i = 0; i < gameState.vehicles.length; i++) {
+    var v = gameState.vehicles[i];
+    var dx = wp.x - v.x, dy = wp.y - v.y;
+    var dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < threshold && dist < bestDist) { bestDist = dist; best = v; }
+  }
+  return best;
+}
+
+function handleTap(clientX, clientY) {
+  var tappedV = getVehicleAtScreen(clientX, clientY);
+  if (tappedV) {
+    if (gameState.activeVehicleId === tappedV.id) {
+      // Tap active vehicle again = deselect
+      tappedV.moving = false; tappedV.targetX = null; tappedV.targetY = null;
+      gameState.activeVehicleId = null;
+      gameState.cameraFollowing = false;
+    } else {
+      // Select new vehicle
+      var current = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
+      if (current) { current.moving = false; current.targetX = null; current.targetY = null; }
+      gameState.activeVehicleId = tappedV.id;
+      gameState.cameraFollowing = true;
+    }
+    saveGameState();
+    return;
+  }
+
+  var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
+  if (!activeV) return;
+  var wp = screenToWorld(clientX, clientY);
+  activeV.targetX = wp.x; activeV.targetY = wp.y;
+  activeV.moving = true; activeV.dragging = false;
+  gameState.cameraFollowing = true;
+}
+
+function setupInput() {
+  var viewport = document.getElementById('game-screen');
+
+  viewport.addEventListener('pointerdown', function(e) {
+    if (e.target.closest('.ui-btn')) return;
+    e.preventDefault();
+    pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+    var pArr = getPointerArray();
+
+    if (pArr.length === 1) {
+      touchStartTime = Date.now();
+      touchMoved = false;
+      lastPanX = e.clientX; lastPanY = e.clientY;
+      tapStartX = e.clientX; tapStartY = e.clientY;
+      isPanning = false;
+    } else if (pArr.length >= 2) {
+      var pd = getPinchData(pArr);
+      lastPinchDist = pd.dist; lastPinchCX = pd.cx; lastPinchCY = pd.cy;
+      isPanning = true;
+    }
+  }, { passive: false });
+
+  viewport.addEventListener('pointermove', function(e) {
+    if (!pointers[e.pointerId]) return;
+    e.preventDefault();
+    pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+    var pArr = getPointerArray();
+
+    if (pArr.length === 1) {
+      var dx = e.clientX - lastPanX, dy = e.clientY - lastPanY;
+      var totalDx = e.clientX - tapStartX, totalDy = e.clientY - tapStartY;
+
+      if (!isPanning && (Math.abs(totalDx) > 10 || Math.abs(totalDy) > 10)) {
+        touchMoved = true;
+        isPanning = true;
+        gameState.cameraFollowing = false;
+      }
+
+      if (isPanning) {
+        gameState.panX += dx; gameState.panY += dy;
+        lastPanX = e.clientX; lastPanY = e.clientY;
+        gameState.cameraFollowing = false;
+      }
+    } else if (pArr.length >= 2) {
+      var pd = getPinchData(pArr);
+      gameState.cameraFollowing = false;
+      var zoomRatio = pd.dist / lastPinchDist;
+      var newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, gameState.scale * zoomRatio));
+      var dCx = pd.cx - lastPinchCX, dCy = pd.cy - lastPinchCY;
+      gameState.panX = gameState.panX + dCx - (lastPinchCX - gameState.panX) * (newScale / gameState.scale - 1);
+      gameState.panY = gameState.panY + dCy - (lastPinchCY - gameState.panY) * (newScale / gameState.scale - 1);
+      gameState.scale = newScale;
+      lastPinchDist = pd.dist; lastPinchCX = pd.cx; lastPinchCY = pd.cy;
+      touchMoved = true;
+    }
+  }, { passive: false });
+
+  viewport.addEventListener('pointerup', function(e) {
+    if (!pointers[e.pointerId]) return;
+    e.preventDefault();
+
+    delete pointers[e.pointerId];
+    var elapsed = Date.now() - touchStartTime;
+    if (!touchMoved && elapsed < 400) handleTap(tapStartX, tapStartY);
+
+    var pArr = getPointerArray();
+    if (pArr.length >= 2) {
+      var pd = getPinchData(pArr);
+      lastPinchDist = pd.dist; lastPinchCX = pd.cx; lastPinchCY = pd.cy;
+    } else if (pArr.length === 1) {
+      var p = pArr[0];
+      lastPanX = p.x; lastPanY = p.y;
+      isPanning = true;
+    }
+  }, { passive: false });
+
+  viewport.addEventListener('pointercancel', function(e) {
+    delete pointers[e.pointerId];
+  });
+
+  viewport.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    gameState.cameraFollowing = false;
+    var zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+    var newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, gameState.scale * zoomFactor));
+    gameState.panX = e.clientX - (e.clientX - gameState.panX) * (newScale / gameState.scale);
+    gameState.panY = e.clientY - (e.clientY - gameState.panY) * (newScale / gameState.scale);
+    gameState.scale = newScale;
+  }, { passive: false });
+
+  // Prevent browser zoom/scroll
+  document.addEventListener('touchstart', function(e) {
+    if (!e.target.closest('.ui-btn')) e.preventDefault();
+  }, { passive: false });
+  document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
+  document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
+}
+
+// ============================================================
+// UI
+// ============================================================
+
+function setupUI() {
+  document.getElementById('btn-back').addEventListener('click', function(e) {
+    e.stopPropagation();
+    saveGameState();
+    showStartScreen();
+  });
+
+  document.getElementById('btn-daynight').addEventListener('click', function(e) {
+    e.stopPropagation();
+    gameState.isNight = !gameState.isNight;
+    applyNightMode();
+    saveGameState();
+  });
+}
+
+function applyNightMode() {
+  var overlay = document.getElementById('night-overlay');
+  var btn = document.getElementById('btn-daynight');
+  overlay.classList.toggle('active', gameState.isNight);
+  btn.innerHTML = gameState.isNight ? '&#x1F319;' : '&#x2600;';
+}
+
+// ============================================================
+// SCREENS
+// ============================================================
+
+function showStartScreen() {
+  currentScreen = 'start';
+  document.getElementById('start-screen').classList.remove('hidden');
+  document.getElementById('game-screen').classList.remove('active');
+}
+
+function showGameScreen() {
+  currentScreen = 'game';
+  document.getElementById('start-screen').classList.add('hidden');
+  document.getElementById('game-screen').classList.add('active');
+  resizeCanvas();
+}
+
+function buildStartScreen() {
+  var list = document.getElementById('world-list');
+  list.innerHTML = '';
+
+  for (var i = 0; i < WORLDS.length; i++) {
+    (function(w) {
+      var card = document.createElement('div');
+      card.className = 'world-card';
+
+      var thumb = document.createElement('div');
+      thumb.className = 'world-card-thumb';
+      var thumbCanvas = document.createElement('canvas');
+      thumbCanvas.width = 260; thumbCanvas.height = 195;
+      var tctx = thumbCanvas.getContext('2d');
+      var placeholder = generatePlaceholderWorld(WORLD_W, WORLD_H);
+      tctx.drawImage(placeholder, 0, 0, 260, 195);
+      thumb.appendChild(thumbCanvas);
+
+      var name = document.createElement('div');
+      name.className = 'world-card-name';
+      name.textContent = w.name;
+
+      card.appendChild(thumb);
+      card.appendChild(name);
+      card.addEventListener('click', function() { startWorld(w); });
+      list.appendChild(card);
+    })(WORLDS[i]);
+  }
+}
+
+function startWorld(worldDef) {
+  loadWorldImage(worldDef).then(function() {
+    initVehicles();
+    var loaded = loadGameState();
+
+    if (!loaded) {
+      var vw = window.innerWidth, vh = window.innerHeight;
+      var imgW = worldImage.width || WORLD_W;
+      var imgH = worldImage.height || WORLD_H;
+      gameState.scale = Math.min(vw / imgW, vh / imgH) * 1.5;
+      gameState.panX = (vw - imgW * gameState.scale) / 2;
+      gameState.panY = (vh - imgH * gameState.scale) / 2;
+    }
+
+    applyNightMode();
+    showGameScreen();
+  });
+}
+
+// ============================================================
+// GAME LOOP
+// ============================================================
+
+var lastTime = 0;
+
+function gameLoop(timestamp) {
+  if (!lastTime) lastTime = timestamp;
+  var dt = Math.min((timestamp - lastTime) / 1000, 0.1);
+  lastTime = timestamp;
+
+  gameState.pulseTime += dt;
+
+  if (currentScreen === 'game') {
+    updateVehicles(dt);
+    cameraFollowActive(dt);
+    render();
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+// ============================================================
+// INIT
+// ============================================================
+
+function init() {
+  loadCarSprite().then(function() {
+    buildStartScreen();
+    setupInput();
+    setupUI();
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    setInterval(saveGameState, 5000);
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) saveGameState();
+    });
+    lastTime = 0;
+    requestAnimationFrame(gameLoop);
+  });
+}
+
+init();
+</script>
 </body>
 </html>
