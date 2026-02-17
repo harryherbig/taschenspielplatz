@@ -187,17 +187,33 @@ const MAX_SCALE = 3;
 const WORLD_W = 2400;
 const WORLD_H = 2400;
 
-// Vehicle types: speed in world-pixels per second
+// Reference size: all positions/speeds are authored as fractions of this
+const REF_SIZE = 8192;
+
+// Vehicle sprites: all 1024x1024, hood pointing UP
+const CAR_SCALE_FACTOR = 0.065;  // base vehicle size in world = worldW * this
+
+// Sprite file names (loaded at init)
+const VEHICLE_SPRITES = ['vehicle_normal', 'vehicle_firetruck', 'vehicle_ambulance', 'vehicle_adac'];
+
+// Vehicle types: positions and speed as fractions of world size (0..1)
+// sizeMul: size relative to the normal car (1.0 = base)
+// startFX/startFY: spread around center of map so they land on roads in most worlds
 const VEHICLE_DEFS = [
-  { id: 'v-auto',         type: 'auto',         hue: 0,   speed: 340, startX: 620,  startY: 420  },
-  { id: 'v-feuerwehr',    type: 'feuerwehr',    hue: 0,   speed: 270, startX: 1220, startY: 820  },
-  { id: 'v-krankenwagen', type: 'krankenwagen', hue: 200, speed: 290, startX: 1820, startY: 420  },
-  { id: 'v-bagger',       type: 'bagger',       hue: 45,  speed: 130, startX: 520,  startY: 1620 },
-  { id: 'v-abschlepper',  type: 'abschlepper',  hue: 280, speed: 200, startX: 1620, startY: 1820 },
+  { id: 'v-auto',         sprite: 'vehicle_normal',    sizeMul: 1.0, speedF: 0.084, startFX: 0.40, startFY: 0.40 },
+  { id: 'v-feuerwehr',    sprite: 'vehicle_firetruck', sizeMul: 1.7, speedF: 0.066, startFX: 0.55, startFY: 0.42 },
+  { id: 'v-krankenwagen', sprite: 'vehicle_ambulance', sizeMul: 1.4, speedF: 0.070, startFX: 0.45, startFY: 0.55 },
+  { id: 'v-adac',         sprite: 'vehicle_adac',      sizeMul: 1.2, speedF: 0.060, startFX: 0.35, startFY: 0.58 },
 ];
+
+// Actual world pixel size — set when a world loads
+var worldW = REF_SIZE;
+var worldH = REF_SIZE;
 
 const WORLDS = [
   { id: 'world1', name: 'Stadtpark', image: 'assets/world1.png' },
+  { id: 'world2', name: 'Hafenstadt', image: 'assets/world2.png' },
+  { id: 'world3', name: 'Bergdorf', image: 'assets/world3.png' },
 ];
 
 // ============================================================
@@ -341,25 +357,28 @@ var gameState = {
 // ASSETS
 // ============================================================
 
-var carSprite = null;
+var vehicleSprites = {};  // name → canvas
 var worldImage = null;
 
-function loadCarSprite() {
-  return new Promise(function(resolve) {
-    var img = new Image();
-    img.onload = function() {
-      var c = document.createElement('canvas');
-      c.width = img.width; c.height = img.height;
-      c.getContext('2d').drawImage(img, 0, 0);
-      carSprite = c;
-      resolve();
-    };
-    img.onerror = function() {
-      carSprite = generateCarSprite();
-      resolve();
-    };
-    img.src = 'assets/car.png';
+function loadVehicleSprites() {
+  var promises = VEHICLE_SPRITES.map(function(name) {
+    return new Promise(function(resolve) {
+      var img = new Image();
+      img.onload = function() {
+        var c = document.createElement('canvas');
+        c.width = img.width; c.height = img.height;
+        c.getContext('2d').drawImage(img, 0, 0);
+        vehicleSprites[name] = c;
+        resolve();
+      };
+      img.onerror = function() {
+        vehicleSprites[name] = generateCarSprite();
+        resolve();
+      };
+      img.src = 'assets/' + name + '.png';
+    });
   });
+  return Promise.all(promises);
 }
 
 function loadWorldImage(worldDef) {
@@ -367,10 +386,14 @@ function loadWorldImage(worldDef) {
     var img = new Image();
     img.onload = function() {
       worldImage = img;
+      worldW = img.width;
+      worldH = img.height;
       resolve();
     };
     img.onerror = function() {
       worldImage = generatePlaceholderWorld(WORLD_W, WORLD_H);
+      worldW = WORLD_W;
+      worldH = WORLD_H;
       resolve();
     };
     img.src = worldDef.image;
@@ -383,10 +406,14 @@ function loadWorldImage(worldDef) {
 
 function createVehicle(def) {
   return {
-    id: def.id, type: def.type, hue: def.hue, speed: def.speed,
-    x: def.startX, y: def.startY, angle: 0,
+    id: def.id, sprite: def.sprite, sizeMul: def.sizeMul || 1,
+    maxSpeed: def.speedF * worldW,
+    x: def.startFX * worldW,
+    y: def.startFY * worldH,
+    angle: 0,         // heading in degrees (0 = right, 90 = down)
+    vx: 0, vy: 0,     // current velocity (for SmoothDamp)
     targetX: null, targetY: null,
-    moving: false, dragging: false,
+    dragging: false,
   };
 }
 
@@ -423,7 +450,12 @@ function loadGameState() {
       for (var i = 0; i < data.vehicles.length; i++) {
         var sv = data.vehicles[i];
         var v = gameState.vehicles.find(function(vv) { return vv.id === sv.id; });
-        if (v) { v.x = sv.x; v.y = sv.y; v.angle = sv.angle || 0; }
+        if (v) {
+          // Only restore if position is within current world bounds
+          if (sv.x >= 0 && sv.x <= worldW && sv.y >= 0 && sv.y <= worldH) {
+            v.x = sv.x; v.y = sv.y; v.angle = sv.angle || 0;
+          }
+        }
       }
     }
     if (data.activeVehicleId != null) gameState.activeVehicleId = data.activeVehicleId;
@@ -451,16 +483,23 @@ function lerpAngle(a, b, t) {
   return a + diff * t;
 }
 
+function getCarSize(sizeMul) {
+  // All vehicle sprites are square (1024x1024)
+  var carS = worldW * CAR_SCALE_FACTOR * (sizeMul || 1);
+  return { w: carS, h: carS };
+}
+
 function drawVehicle(v, isActive) {
-  if (!carSprite) return;
-  var sprite = carSprite;
+  var sprite = vehicleSprites[v.sprite];
+  if (!sprite) return;
   var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
 
   var sx = v.x * scale + panX;
   var sy = v.y * scale + panY;
-  var carW = 50 * scale;
-  var carH = 70 * scale;
-  var rotRad = (v.angle - 90) * Math.PI / 180;
+  var cs = getCarSize(v.sizeMul);
+  var carW = cs.w * scale;
+  var carH = cs.h * scale;
+  var rotRad = (v.angle + 90) * Math.PI / 180;
 
   if (isActive) {
     ctx.save();
@@ -481,7 +520,6 @@ function drawVehicle(v, isActive) {
   ctx.shadowBlur = Math.max(4, 8 * scale);
   ctx.shadowOffsetX = 3 * scale;
   ctx.shadowOffsetY = 4 * scale;
-  if (v.hue !== 0) ctx.filter = 'hue-rotate(' + v.hue + 'deg)';
   ctx.drawImage(sprite, -carW/2, -carH/2, carW, carH);
   ctx.restore();
 }
@@ -495,8 +533,8 @@ function render() {
   ctx.fillRect(0, 0, cw, ch);
 
   if (worldImage) {
-    var imgW = (worldImage.width || WORLD_W) * scale;
-    var imgH = (worldImage.height || WORLD_H) * scale;
+    var imgW = worldW * scale;
+    var imgH = worldH * scale;
     ctx.drawImage(worldImage, panX, panY, imgW, imgH);
   }
 
@@ -512,40 +550,84 @@ function render() {
 }
 
 // ============================================================
-// VEHICLE MOVEMENT
+// VEHICLE MOVEMENT — SmoothDamp steering model
 // ============================================================
+
+// SmoothDamp: critically-damped spring (like Unity's Mathf.SmoothDamp)
+// Returns { val, vel } — new value and new velocity
+function smoothDamp(current, target, currentVel, smoothTime, maxSpeed, dt) {
+  smoothTime = Math.max(0.0001, smoothTime);
+  var omega = 2.0 / smoothTime;
+  var x = omega * dt;
+  // Padé approximant for exp(-x)
+  var exp = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+  var delta = current - target;
+  var maxDelta = maxSpeed * smoothTime;
+  // Clamp
+  if (delta > maxDelta) delta = maxDelta;
+  else if (delta < -maxDelta) delta = -maxDelta;
+  var temp = (currentVel + omega * delta) * dt;
+  var newVel = (currentVel - omega * temp) * exp;
+  var newVal = (current - delta) + (delta + temp) * exp;
+  // Overshoot guard
+  if ((target - current > 0) === (newVal > target)) {
+    newVal = target;
+    newVel = 0;
+  }
+  return { val: newVal, vel: newVel };
+}
+
+// Max turn rate in degrees/sec — how fast the car can steer
+var MAX_TURN_RATE = 280;
+// SmoothDamp time — lower = snappier, higher = floatier
+var DRAG_SMOOTH_TIME = 0.15;
 
 function updateVehicles(dt) {
   for (var i = 0; i < gameState.vehicles.length; i++) {
     var v = gameState.vehicles[i];
-    if (!v.moving && !v.dragging) continue;
-    if (v.targetX == null || v.targetY == null) { v.moving = false; continue; }
 
-    var dx = v.targetX - v.x;
-    var dy = v.targetY - v.y;
-    var dist = Math.sqrt(dx*dx + dy*dy);
-
-    if (dist < 2) {
-      v.x = v.targetX; v.y = v.targetY;
-      v.moving = false; v.targetX = null; v.targetY = null;
+    if (!v.dragging) {
+      // Dampen velocity to zero when not dragging
+      v.vx *= Math.max(0, 1 - 8 * dt);
+      v.vy *= Math.max(0, 1 - 8 * dt);
       continue;
     }
 
-    // Smooth rotation toward target
-    var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
-    var angleDiff = Math.abs(((targetAngle - v.angle + 540) % 360) - 180);
-    var rotT = Math.min(1, 8 * dt);
-    v.angle = lerpAngle(v.angle, targetAngle, rotT);
+    if (v.targetX == null || v.targetY == null) continue;
 
-    // Move
-    var moveAmount = v.speed * dt;
-    if (moveAmount >= dist) {
-      v.x = v.targetX; v.y = v.targetY;
-      v.moving = false; v.targetX = null; v.targetY = null;
-    } else {
-      v.x += (dx / dist) * moveAmount;
-      v.y += (dy / dist) * moveAmount;
+    var dx = v.targetX - v.x;
+    var dy = v.targetY - v.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+
+    // Dead zone — don't jitter when finger is right on the car
+    var cs = getCarSize(v.sizeMul);
+    var deadZone = cs.h * 0.1;
+    if (dist < deadZone) {
+      v.vx *= Math.max(0, 1 - 10 * dt);
+      v.vy *= Math.max(0, 1 - 10 * dt);
+      continue;
     }
+
+    // 1) STEER: turn the car's heading toward the target with a limited turn rate
+    var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    var angleDiff = ((targetAngle - v.angle + 540) % 360) - 180; // -180..180
+    var maxTurn = MAX_TURN_RATE * dt;
+    if (angleDiff > maxTurn) angleDiff = maxTurn;
+    else if (angleDiff < -maxTurn) angleDiff = -maxTurn;
+    v.angle += angleDiff;
+    // Normalize
+    v.angle = ((v.angle % 360) + 360) % 360;
+
+    // 2) MOVE: SmoothDamp position toward target
+    var speed = v.maxSpeed;
+    // Scale speed down when target is close for nice deceleration
+    var approachScale = Math.min(1, dist / (cs.h * 2));
+    var curSpeed = speed * (0.3 + 0.7 * approachScale);
+
+    var rx = smoothDamp(v.x, v.targetX, v.vx, DRAG_SMOOTH_TIME, curSpeed, dt);
+    var ry = smoothDamp(v.y, v.targetY, v.vy, DRAG_SMOOTH_TIME, curSpeed, dt);
+    v.x = rx.val; v.vx = rx.vel;
+    v.y = ry.val; v.vy = ry.vel;
   }
 }
 
@@ -567,7 +649,7 @@ function cameraFollowActive(dt) {
     gameState.panY += (targetPanY - gameState.panY) * ease;
   }
 
-  if (!v.moving && !v.dragging) {
+  if (!v.dragging) {
     gameState.cameraFollowing = false;
   }
 }
@@ -584,6 +666,10 @@ var lastPinchDist = 0, lastPinchCX = 0, lastPinchCY = 0;
 var isPanning = false;
 var tapStartX = 0, tapStartY = 0;
 
+// Dragging state
+var draggedVehicle = null;   // vehicle being steered
+var isDragging = false;       // committed to dragging (past threshold)
+
 function getPointerArray() { return Object.values(pointers); }
 
 function getPinchData(arr) {
@@ -598,9 +684,10 @@ function screenToWorld(sx, sy) {
 function getVehicleAtScreen(clientX, clientY) {
   var wp = screenToWorld(clientX, clientY);
   var best = null, bestDist = Infinity;
-  var threshold = 60;
   for (var i = 0; i < gameState.vehicles.length; i++) {
     var v = gameState.vehicles[i];
+    var cs = getCarSize(v.sizeMul);
+    var threshold = Math.max(cs.w, cs.h) * 0.8;
     var dx = wp.x - v.x, dy = wp.y - v.y;
     var dist = Math.sqrt(dx*dx + dy*dy);
     if (dist < threshold && dist < bestDist) { bestDist = dist; best = v; }
@@ -608,31 +695,14 @@ function getVehicleAtScreen(clientX, clientY) {
   return best;
 }
 
-function handleTap(clientX, clientY) {
-  var tappedV = getVehicleAtScreen(clientX, clientY);
-  if (tappedV) {
-    if (gameState.activeVehicleId === tappedV.id) {
-      // Tap active vehicle again = deselect
-      tappedV.moving = false; tappedV.targetX = null; tappedV.targetY = null;
-      gameState.activeVehicleId = null;
-      gameState.cameraFollowing = false;
-    } else {
-      // Select new vehicle
-      var current = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
-      if (current) { current.moving = false; current.targetX = null; current.targetY = null; }
-      gameState.activeVehicleId = tappedV.id;
-      gameState.cameraFollowing = true;
-    }
-    saveGameState();
-    return;
+function releaseVehicle() {
+  if (draggedVehicle) {
+    draggedVehicle.dragging = false;
+    draggedVehicle.targetX = null;
+    draggedVehicle.targetY = null;
   }
-
-  var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
-  if (!activeV) return;
-  var wp = screenToWorld(clientX, clientY);
-  activeV.targetX = wp.x; activeV.targetY = wp.y;
-  activeV.moving = true; activeV.dragging = false;
-  gameState.cameraFollowing = true;
+  isDragging = false;
+  draggedVehicle = null;
 }
 
 function setupInput() {
@@ -650,7 +720,14 @@ function setupInput() {
       lastPanX = e.clientX; lastPanY = e.clientY;
       tapStartX = e.clientX; tapStartY = e.clientY;
       isPanning = false;
+      isDragging = false;
+
+      // Check if finger landed on a vehicle
+      var hitV = getVehicleAtScreen(e.clientX, e.clientY);
+      draggedVehicle = hitV || null;
     } else if (pArr.length >= 2) {
+      // Second finger → cancel drag, switch to pinch
+      releaseVehicle();
       var pd = getPinchData(pArr);
       lastPinchDist = pd.dist; lastPinchCX = pd.cx; lastPinchCY = pd.cy;
       isPanning = true;
@@ -666,14 +743,29 @@ function setupInput() {
     if (pArr.length === 1) {
       var dx = e.clientX - lastPanX, dy = e.clientY - lastPanY;
       var totalDx = e.clientX - tapStartX, totalDy = e.clientY - tapStartY;
+      var totalDist = Math.sqrt(totalDx * totalDx + totalDy * totalDy);
 
-      if (!isPanning && (Math.abs(totalDx) > 10 || Math.abs(totalDy) > 10)) {
+      // Commit to drag-car or pan-map once past threshold
+      if (!isPanning && !isDragging && totalDist > 10) {
         touchMoved = true;
-        isPanning = true;
-        gameState.cameraFollowing = false;
+        if (draggedVehicle) {
+          isDragging = true;
+          draggedVehicle.dragging = true;
+          gameState.activeVehicleId = draggedVehicle.id;
+          gameState.cameraFollowing = false;
+        } else {
+          isPanning = true;
+          gameState.cameraFollowing = false;
+        }
       }
 
-      if (isPanning) {
+      if (isDragging && draggedVehicle) {
+        // Update target — physics runs in game loop
+        var wp = screenToWorld(e.clientX, e.clientY);
+        draggedVehicle.targetX = wp.x;
+        draggedVehicle.targetY = wp.y;
+        lastPanX = e.clientX; lastPanY = e.clientY;
+      } else if (isPanning) {
         gameState.panX += dx; gameState.panY += dy;
         lastPanX = e.clientX; lastPanY = e.clientY;
         gameState.cameraFollowing = false;
@@ -696,9 +788,33 @@ function setupInput() {
     if (!pointers[e.pointerId]) return;
     e.preventDefault();
 
+    var wasDragging = isDragging;
+
+    // Release car
+    if (isDragging) {
+      releaseVehicle();
+      saveGameState();
+    }
+
     delete pointers[e.pointerId];
     var elapsed = Date.now() - touchStartTime;
-    if (!touchMoved && elapsed < 400) handleTap(tapStartX, tapStartY);
+
+    // Tap: select/deselect vehicle
+    if (!touchMoved && !wasDragging && elapsed < 400) {
+      var tappedV = getVehicleAtScreen(tapStartX, tapStartY);
+      if (tappedV) {
+        if (gameState.activeVehicleId === tappedV.id) {
+          gameState.activeVehicleId = null;
+        } else {
+          gameState.activeVehicleId = tappedV.id;
+        }
+        gameState.cameraFollowing = false;
+        saveGameState();
+      }
+    }
+
+    isDragging = false;
+    draggedVehicle = null;
 
     var pArr = getPointerArray();
     if (pArr.length >= 2) {
@@ -712,6 +828,7 @@ function setupInput() {
   }, { passive: false });
 
   viewport.addEventListener('pointercancel', function(e) {
+    releaseVehicle();
     delete pointers[e.pointerId];
   });
 
@@ -813,11 +930,9 @@ function startWorld(worldDef) {
 
     if (!loaded) {
       var vw = window.innerWidth, vh = window.innerHeight;
-      var imgW = worldImage.width || WORLD_W;
-      var imgH = worldImage.height || WORLD_H;
-      gameState.scale = Math.min(vw / imgW, vh / imgH) * 1.5;
-      gameState.panX = (vw - imgW * gameState.scale) / 2;
-      gameState.panY = (vh - imgH * gameState.scale) / 2;
+      gameState.scale = Math.min(vw / worldW, vh / worldH) * 1.5;
+      gameState.panX = (vw - worldW * gameState.scale) / 2;
+      gameState.panY = (vh - worldH * gameState.scale) / 2;
     }
 
     applyNightMode();
@@ -852,7 +967,7 @@ function gameLoop(timestamp) {
 // ============================================================
 
 function init() {
-  loadCarSprite().then(function() {
+  loadVehicleSprites().then(function() {
     buildStartScreen();
     setupInput();
     setupUI();

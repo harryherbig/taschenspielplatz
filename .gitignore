@@ -1,5 +1,3 @@
 .DS_Store
 .idea/
 assets/og/
-node_modules/
-dist/
