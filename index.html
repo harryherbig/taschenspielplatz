@@ -1222,6 +1222,7 @@ function setupUI() {
     currentPack = null;
     packSprites = {};
     worldImage = null;
+    history.replaceState(null, '', location.pathname);
     showStartScreen();
   });
 
@@ -1296,6 +1297,7 @@ function buildStartScreen() {
 
 function startPack(pack) {
   currentPack = pack;
+  history.replaceState(null, '', '#' + pack.id);
 
   Promise.all([
     loadWorldImage(pack),
@@ -1353,6 +1355,14 @@ function init() {
   document.addEventListener('visibilitychange', function() {
     if (document.hidden && currentPack) savePackState(currentPack);
   });
+
+  // Deep-link: #city jumps straight into the world
+  var hash = location.hash.replace('#', '');
+  if (hash) {
+    var pack = ASSET_PACKS.find(function(p) { return p.id === hash; });
+    if (pack) { startPack(pack); }
+  }
+
   lastTime = 0;
   requestAnimationFrame(gameLoop);
 }
