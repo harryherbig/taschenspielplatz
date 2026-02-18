@@ -495,6 +495,91 @@ function loadWorldImage(pack) {
 }
 
 // ============================================================
+// TIRE TRACKS
+// ============================================================
+
+var TRACK_FADE_TIME = 16;       // seconds until fully faded
+var TRACK_SAMPLE_DIST = 0.008;  // min distance between samples (fraction of worldW)
+var tireTrackSegments = [];     // array of { x, y, angle, width, time }
+
+function sampleTireTrack(v, now) {
+  var cs = getCarSize(v.sizeMul);
+  var minDist = TRACK_SAMPLE_DIST * worldW;
+  var last = v._lastTrackX;
+
+  // Only sample if moved enough since last sample
+  if (last != null) {
+    var ddx = v.x - v._lastTrackX;
+    var ddy = v.y - v._lastTrackY;
+    if (ddx * ddx + ddy * ddy < minDist * minDist) return;
+  }
+
+  tireTrackSegments.push({
+    x: v.x, y: v.y,
+    angle: v.angle,
+    width: cs.w * 0.35,
+    time: now,
+  });
+
+  v._lastTrackX = v.x;
+  v._lastTrackY = v.y;
+}
+
+function pruneTireTracks(now) {
+  while (tireTrackSegments.length > 0 && now - tireTrackSegments[0].time > TRACK_FADE_TIME) {
+    tireTrackSegments.shift();
+  }
+}
+
+function drawTireTracks(now) {
+  if (tireTrackSegments.length < 2) return;
+  var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
+
+  for (var i = 1; i < tireTrackSegments.length; i++) {
+    var prev = tireTrackSegments[i - 1];
+    var cur = tireTrackSegments[i];
+
+    var age = now - cur.time;
+    var alpha = Math.max(0, 1 - age / TRACK_FADE_TIME) * 0.3;
+    if (alpha <= 0) continue;
+
+    // Two tire lines offset perpendicular to heading
+    var lineW = Math.max(1, 8 * scale);
+    var trackInset = lineW / scale * 1.5;
+
+    var rad = (cur.angle + 90) * Math.PI / 180;
+    var perpX = Math.cos(rad);
+    var perpY = Math.sin(rad);
+    var offset = (cur.width * 0.45 - trackInset) * scale;
+    var prevRad = (prev.angle + 90) * Math.PI / 180;
+    var prevPerpX = Math.cos(prevRad);
+    var prevPerpY = Math.sin(prevRad);
+    var prevOffset = (prev.width * 0.45 - trackInset) * scale;
+
+    var px = prev.x * scale + panX;
+    var py = prev.y * scale + panY;
+    var cx = cur.x * scale + panX;
+    var cy = cur.y * scale + panY;
+
+    ctx.strokeStyle = 'rgba(40, 35, 30, ' + alpha + ')';
+    ctx.lineWidth = lineW;
+    ctx.lineCap = 'round';
+
+    // Left tire
+    ctx.beginPath();
+    ctx.moveTo(px + prevPerpX * prevOffset, py + prevPerpY * prevOffset);
+    ctx.lineTo(cx + perpX * offset, cy + perpY * offset);
+    ctx.stroke();
+
+    // Right tire
+    ctx.beginPath();
+    ctx.moveTo(px - prevPerpX * prevOffset, py - prevPerpY * prevOffset);
+    ctx.lineTo(cx - perpX * offset, cy - perpY * offset);
+    ctx.stroke();
+  }
+}
+
+// ============================================================
 // VEHICLES
 // ============================================================
 
@@ -509,12 +594,14 @@ function createVehicle(def) {
     vx: 0, vy: 0,     // current velocity (for SmoothDamp)
     targetX: null, targetY: null,
     dragging: false,
+    _lastTrackX: null, _lastTrackY: null,
   };
 }
 
 function initVehicles(pack) {
   gameState.vehicles = pack.vehicles.map(createVehicle);
   gameState.activeVehicleId = null;
+  tireTrackSegments = [];
 }
 
 // ============================================================
@@ -771,6 +858,10 @@ function render() {
     ctx.drawImage(worldImage, panX, panY, imgW, imgH);
   }
 
+  // Tire tracks (between world and vehicles)
+  pruneTireTracks(gameState.pulseTime);
+  drawTireTracks(gameState.pulseTime);
+
   // Inactive vehicles first
   for (var i = 0; i < gameState.vehicles.length; i++) {
     var v = gameState.vehicles[i];
@@ -884,6 +975,11 @@ function updateVehicles(dt) {
     v.vy = ry.val;
     v.x += v.vx * dt;
     v.y += v.vy * dt;
+
+    // Sample tire track while moving
+    if (curVel > v.maxSpeed * 0.05) {
+      sampleTireTrack(v, gameState.pulseTime);
+    }
 
     // Clamp to world bounds
     var halfW = cs.w * 0.4, halfH = cs.h * 0.4;
