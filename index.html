@@ -815,8 +815,9 @@ function smoothDamp(current, target, currentVel, smoothTime, maxSpeed, dt) {
   return { val: newVal, vel: newVel };
 }
 
-// Max turn rate in degrees/sec — how fast the car can steer
-var MAX_TURN_RATE = 280;
+// Turn rate: slower when moving fast (like a real vehicle), tighter when slow/stopped
+var MAX_TURN_RATE_SLOW = 90;    // deg/sec at very low speed (tight maneuvering)
+var MAX_TURN_RATE_FAST = 30;    // deg/sec at full speed (highway feel)
 // SmoothDamp time — lower = snappier, higher = floatier
 var DRAG_SMOOTH_TIME = 0.15;
 
@@ -846,26 +847,43 @@ function updateVehicles(dt) {
       continue;
     }
 
-    // 1) STEER: turn the car's heading toward the target with a limited turn rate
+    // 1) STEER: turn rate depends on current speed — fast = wide turns, slow = tight
+    var curVel = Math.sqrt(v.vx * v.vx + v.vy * v.vy);
+    var speedRatio = Math.min(1, curVel / v.maxSpeed);
+    var turnRate = MAX_TURN_RATE_SLOW + (MAX_TURN_RATE_FAST - MAX_TURN_RATE_SLOW) * speedRatio;
+
     var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
     var angleDiff = ((targetAngle - v.angle + 540) % 360) - 180; // -180..180
-    var maxTurn = MAX_TURN_RATE * dt;
+    var maxTurn = turnRate * dt;
     if (angleDiff > maxTurn) angleDiff = maxTurn;
     else if (angleDiff < -maxTurn) angleDiff = -maxTurn;
     v.angle += angleDiff;
     // Normalize
     v.angle = ((v.angle % 360) + 360) % 360;
 
-    // 2) MOVE: SmoothDamp position toward target
+    // 2) MOVE: only along the vehicle's heading direction (no strafing)
     var speed = v.maxSpeed;
-    // Scale speed down when target is close for nice deceleration
     var approachScale = Math.min(1, dist / (cs.h * 2));
     var curSpeed = speed * (0.3 + 0.7 * approachScale);
 
-    var rx = smoothDamp(v.x, v.targetX, v.vx, DRAG_SMOOTH_TIME, curSpeed, dt);
-    var ry = smoothDamp(v.y, v.targetY, v.vy, DRAG_SMOOTH_TIME, curSpeed, dt);
-    v.x = rx.val; v.vx = rx.vel;
-    v.y = ry.val; v.vy = ry.vel;
+    // Project distance onto heading direction — only move forward
+    var headRad = v.angle * Math.PI / 180;
+    var headX = Math.cos(headRad);
+    var headY = Math.sin(headRad);
+    var forwardDist = dx * headX + dy * headY; // dot product
+    if (forwardDist < 0) forwardDist = 0;      // no reversing
+
+    var targetSpeed = Math.min(curSpeed, forwardDist / dt);
+    var desiredVx = headX * targetSpeed;
+    var desiredVy = headY * targetSpeed;
+
+    // Smooth the speed transition
+    var rx = smoothDamp(v.vx, desiredVx, 0, DRAG_SMOOTH_TIME, curSpeed * 3, dt);
+    var ry = smoothDamp(v.vy, desiredVy, 0, DRAG_SMOOTH_TIME, curSpeed * 3, dt);
+    v.vx = rx.val;
+    v.vy = ry.val;
+    v.x += v.vx * dt;
+    v.y += v.vy * dt;
 
     // Clamp to world bounds
     var halfW = cs.w * 0.4, halfH = cs.h * 0.4;
