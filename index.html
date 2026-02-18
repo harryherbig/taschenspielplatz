@@ -181,7 +181,7 @@ html, body {
 // CONFIG
 // ============================================================
 
-const STORAGE_KEY = 'taschenspielplatz_v5';
+const STORAGE_VERSION = 'v6';
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 3;
 const WORLD_W = 2400;
@@ -193,28 +193,34 @@ const REF_SIZE = 8192;
 // Vehicle sprites: all 1024x1024, hood pointing UP
 const CAR_SCALE_FACTOR = 0.065;  // base vehicle size in world = worldW * this
 
-// Sprite file names (loaded at init)
-const VEHICLE_SPRITES = ['vehicle_normal', 'vehicle_firetruck', 'vehicle_ambulance', 'vehicle_adac'];
+// ============================================================
+// ASSET PACKS — each pack bundles a world with its vehicles
+// ============================================================
 
-// Vehicle types: positions and speed as fractions of world size (0..1)
-// sizeMul: size relative to the normal car (1.0 = base)
-// startFX/startFY: spread around center of map so they land on roads in most worlds
-const VEHICLE_DEFS = [
-  { id: 'v-auto',         sprite: 'vehicle_normal',    sizeMul: 1.0, speedF: 0.084, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
-  { id: 'v-feuerwehr',    sprite: 'vehicle_firetruck', sizeMul: 1.7, speedF: 0.066, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255] },
-  { id: 'v-krankenwagen', sprite: 'vehicle_ambulance', sizeMul: 1.4, speedF: 0.070, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
-  { id: 'v-adac',         sprite: 'vehicle_adac',      sizeMul: 1.2, speedF: 0.060, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30] },
+const ASSET_PACKS = [
+  {
+    id: 'city',
+    name: 'Bergdorf',
+    worldImage: 'assets/packs/city/world.png',
+    unlocked: true,
+    vehicles: [
+      { id: 'v-auto',           sprite: 'vehicle_normal',       sizeMul: 1.0, speedF: 0.084, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
+      { id: 'v-feuerwehr',      sprite: 'vehicle_fire_truck',   sizeMul: 1.7, speedF: 0.066, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-car',  sprite: 'vehicle_fire_car',     sizeMul: 1.2, speedF: 0.078, startFX: 0.48, startFY: 0.48, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-med',  sprite: 'vehicle_fire_medium',  sizeMul: 1.4, speedF: 0.072, startFX: 0.52, startFY: 0.38, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-ven',  sprite: 'vehicle_fire_venus',   sizeMul: 1.3, speedF: 0.074, startFX: 0.38, startFY: 0.52, glow: [60, 120, 255] },
+      { id: 'v-krankenwagen',   sprite: 'vehicle_ambulance',    sizeMul: 1.4, speedF: 0.070, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
+      { id: 'v-adac',           sprite: 'vehicle_adac',         sizeMul: 1.2, speedF: 0.060, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30] },
+    ],
+  },
+  // Future packs:
+  // { id: 'construction', name: 'Baustelle', worldImage: 'assets/packs/construction/world.png', unlocked: false, vehicles: [...] },
+  // { id: 'farm', name: 'Bauernhof', worldImage: 'assets/packs/farm/world.png', unlocked: false, vehicles: [...] },
 ];
 
 // Actual world pixel size — set when a world loads
 var worldW = REF_SIZE;
 var worldH = REF_SIZE;
-
-const WORLDS = [
-  { id: 'world1', name: 'Stadtpark', image: 'assets/world1.png' },
-  { id: 'world2', name: 'Hafenstadt', image: 'assets/world2.png' },
-  { id: 'world3', name: 'Bergdorf', image: 'assets/world3.png' },
-];
 
 // ============================================================
 // PLACEHOLDER WORLD
@@ -357,31 +363,44 @@ var gameState = {
 // ASSETS
 // ============================================================
 
-var vehicleSprites = {};  // name → canvas
+var currentPack = null;     // active pack reference
+var packSprites = {};       // sprite name → canvas (per-pack)
 var worldImage = null;
 
-function loadVehicleSprites() {
-  var promises = VEHICLE_SPRITES.map(function(name) {
+function getSpritePath(pack, spriteName) {
+  return 'assets/packs/' + pack.id + '/' + spriteName + '.png';
+}
+
+function loadPackSprites(pack) {
+  var spriteNames = [];
+  for (var i = 0; i < pack.vehicles.length; i++) {
+    var name = pack.vehicles[i].sprite;
+    if (spriteNames.indexOf(name) === -1) spriteNames.push(name);
+  }
+
+  packSprites = {};
+
+  var promises = spriteNames.map(function(name) {
     return new Promise(function(resolve) {
       var img = new Image();
       img.onload = function() {
         var c = document.createElement('canvas');
         c.width = img.width; c.height = img.height;
         c.getContext('2d').drawImage(img, 0, 0);
-        vehicleSprites[name] = c;
+        packSprites[name] = c;
         resolve();
       };
       img.onerror = function() {
-        vehicleSprites[name] = generateCarSprite();
+        packSprites[name] = generateCarSprite();
         resolve();
       };
-      img.src = 'assets/' + name + '.png';
+      img.src = getSpritePath(pack, name);
     });
   });
   return Promise.all(promises);
 }
 
-function loadWorldImage(worldDef) {
+function loadWorldImage(pack) {
   return new Promise(function(resolve) {
     var img = new Image();
     img.onload = function() {
@@ -396,7 +415,7 @@ function loadWorldImage(worldDef) {
       worldH = WORLD_H;
       resolve();
     };
-    img.src = worldDef.image;
+    img.src = pack.worldImage;
   });
 }
 
@@ -418,8 +437,8 @@ function createVehicle(def) {
   };
 }
 
-function initVehicles() {
-  gameState.vehicles = VEHICLE_DEFS.map(createVehicle);
+function initVehicles(pack) {
+  gameState.vehicles = pack.vehicles.map(createVehicle);
   gameState.activeVehicleId = null;
 }
 
@@ -427,9 +446,16 @@ function initVehicles() {
 // PERSISTENCE
 // ============================================================
 
-function saveGameState() {
+function getPackStorageKey(pack) {
+  return 'taschenspielplatz_' + STORAGE_VERSION + '_' + pack.id;
+}
+
+function savePackState(pack) {
+  if (!pack) return;
   try {
     var data = {
+      packId: pack.id,
+      vehicleCount: pack.vehicles.length,
       vehicles: gameState.vehicles.map(function(v) {
         return { id: v.id, x: v.x, y: v.y, angle: v.angle };
       }),
@@ -438,16 +464,19 @@ function saveGameState() {
       scale: gameState.scale,
       isNight: gameState.isNight,
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(getPackStorageKey(pack), JSON.stringify(data));
   } catch(e) {}
 }
 
-function loadGameState() {
+function loadPackState(pack) {
   try {
-    var raw = localStorage.getItem(STORAGE_KEY);
+    var raw = localStorage.getItem(getPackStorageKey(pack));
     if (!raw) return false;
     var data = JSON.parse(raw);
-    if (data.vehicles && data.vehicles.length === gameState.vehicles.length) {
+    if (data.packId !== pack.id) return false;
+    if (data.vehicleCount !== pack.vehicles.length) return false;
+
+    if (data.vehicles) {
       for (var i = 0; i < data.vehicles.length; i++) {
         var sv = data.vehicles[i];
         var v = gameState.vehicles.find(function(vv) { return vv.id === sv.id; });
@@ -465,6 +494,20 @@ function loadGameState() {
     if (data.isNight != null) gameState.isNight = data.isNight;
     return true;
   } catch(e) { return false; }
+}
+
+function migrateV5Storage() {
+  var OLD_KEY = 'taschenspielplatz_v5';
+  try {
+    var raw = localStorage.getItem(OLD_KEY);
+    if (!raw) return;
+    var newKey = 'taschenspielplatz_' + STORAGE_VERSION + '_city';
+    if (localStorage.getItem(newKey)) return;  // already migrated
+    var data = JSON.parse(raw);
+    data.packId = 'city';
+    data.vehicleCount = ASSET_PACKS[0].vehicles.length;
+    localStorage.setItem(newKey, JSON.stringify(data));
+  } catch(e) {}
 }
 
 // ============================================================
@@ -491,7 +534,7 @@ function getCarSize(sizeMul) {
 }
 
 function drawVehicle(v, isActive) {
-  var sprite = vehicleSprites[v.sprite];
+  var sprite = packSprites[v.sprite];
   if (!sprite) return;
   var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
 
@@ -803,7 +846,7 @@ function setupInput() {
     // Release car
     if (isDragging) {
       releaseVehicle();
-      saveGameState();
+      savePackState(currentPack);
     }
 
     delete pointers[e.pointerId];
@@ -819,7 +862,7 @@ function setupInput() {
           gameState.activeVehicleId = tappedV.id;
         }
         gameState.cameraFollowing = false;
-        saveGameState();
+        savePackState(currentPack);
       }
     }
 
@@ -867,7 +910,10 @@ function setupInput() {
 function setupUI() {
   document.getElementById('btn-back').addEventListener('click', function(e) {
     e.stopPropagation();
-    saveGameState();
+    savePackState(currentPack);
+    currentPack = null;
+    packSprites = {};
+    worldImage = null;
     showStartScreen();
   });
 
@@ -875,7 +921,7 @@ function setupUI() {
     e.stopPropagation();
     gameState.isNight = !gameState.isNight;
     applyNightMode();
-    saveGameState();
+    savePackState(currentPack);
   });
 }
 
@@ -907,8 +953,8 @@ function buildStartScreen() {
   var list = document.getElementById('world-list');
   list.innerHTML = '';
 
-  for (var i = 0; i < WORLDS.length; i++) {
-    (function(w) {
+  for (var i = 0; i < ASSET_PACKS.length; i++) {
+    (function(pack) {
       var card = document.createElement('div');
       card.className = 'world-card';
 
@@ -917,26 +963,38 @@ function buildStartScreen() {
       var thumbCanvas = document.createElement('canvas');
       thumbCanvas.width = 260; thumbCanvas.height = 195;
       var tctx = thumbCanvas.getContext('2d');
-      var placeholder = generatePlaceholderWorld(WORLD_W, WORLD_H);
-      tctx.drawImage(placeholder, 0, 0, 260, 195);
+
+      // Load actual world image as thumbnail
+      var thumbImg = new Image();
+      thumbImg.onload = function() { tctx.drawImage(thumbImg, 0, 0, 260, 195); };
+      thumbImg.onerror = function() {
+        var placeholder = generatePlaceholderWorld(WORLD_W, WORLD_H);
+        tctx.drawImage(placeholder, 0, 0, 260, 195);
+      };
+      thumbImg.src = pack.worldImage;
       thumb.appendChild(thumbCanvas);
 
       var name = document.createElement('div');
       name.className = 'world-card-name';
-      name.textContent = w.name;
+      name.textContent = pack.name;
 
       card.appendChild(thumb);
       card.appendChild(name);
-      card.addEventListener('click', function() { startWorld(w); });
+      card.addEventListener('click', function() { startPack(pack); });
       list.appendChild(card);
-    })(WORLDS[i]);
+    })(ASSET_PACKS[i]);
   }
 }
 
-function startWorld(worldDef) {
-  loadWorldImage(worldDef).then(function() {
-    initVehicles();
-    var loaded = loadGameState();
+function startPack(pack) {
+  currentPack = pack;
+
+  Promise.all([
+    loadWorldImage(pack),
+    loadPackSprites(pack),
+  ]).then(function() {
+    initVehicles(pack);
+    var loaded = loadPackState(pack);
 
     if (!loaded) {
       var vw = window.innerWidth, vh = window.innerHeight;
@@ -977,19 +1035,18 @@ function gameLoop(timestamp) {
 // ============================================================
 
 function init() {
-  loadVehicleSprites().then(function() {
-    buildStartScreen();
-    setupInput();
-    setupUI();
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
-    setInterval(saveGameState, 5000);
-    document.addEventListener('visibilitychange', function() {
-      if (document.hidden) saveGameState();
-    });
-    lastTime = 0;
-    requestAnimationFrame(gameLoop);
+  migrateV5Storage();
+  buildStartScreen();
+  setupInput();
+  setupUI();
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  setInterval(function() { if (currentPack) savePackState(currentPack); }, 5000);
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden && currentPack) savePackState(currentPack);
   });
+  lastTime = 0;
+  requestAnimationFrame(gameLoop);
 }
 
 init();
