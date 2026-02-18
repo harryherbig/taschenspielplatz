@@ -24,19 +24,75 @@ html, body {
 #start-screen {
   position: fixed; inset: 0;
   display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
+  align-items: center;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   background: linear-gradient(135deg, #2d5016 0%, #1a3a0a 50%, #0f2205 100%);
   z-index: 200;
   transition: opacity 0.4s ease;
+  padding: 40px 20px 40px;
 }
 #start-screen.hidden { opacity: 0; pointer-events: none; }
 
-#start-title {
-  font-size: 28px;
-  font-weight: 700;
-  color: rgba(255,255,255,0.85);
-  letter-spacing: 1px;
-  margin-bottom: 40px;
+#start-welcome {
+  display: flex; flex-direction: column;
+  align-items: center;
+  max-width: 320px;
+  text-align: center;
+}
+
+#start-logo {
+  width: 120px; height: 120px;
+  border-radius: 24px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  margin-bottom: 16px;
+}
+
+#start-subtitle {
+  font-size: 16px;
+  font-weight: 500;
+  color: rgba(255,255,255,0.7);
+  margin-bottom: 20px;
+  line-height: 1.4;
+}
+
+#start-howto {
+  display: flex; flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.howto-step {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 14px;
+  color: rgba(255,255,255,0.6);
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.05);
+}
+
+.howto-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  width: 28px;
+  text-align: center;
+}
+
+#start-divider {
+  width: 60px; height: 2px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 1px;
+  margin: 28px 0 20px;
+}
+
+#start-choose {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.45);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 20px;
 }
 
 .world-card {
@@ -149,6 +205,7 @@ html, body {
 }
 
 @supports (padding-top: env(safe-area-inset-top)) {
+  #start-screen { padding-top: calc(40px + env(safe-area-inset-top)); padding-bottom: calc(40px + env(safe-area-inset-bottom)); }
   #app-title-small { top: calc(8px + env(safe-area-inset-top)); }
   #btn-back { top: calc(12px + env(safe-area-inset-top)); left: calc(12px + env(safe-area-inset-left)); }
   #btn-daynight { top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right)); }
@@ -159,7 +216,17 @@ html, body {
 
 <!-- Start Screen -->
 <div id="start-screen">
-  <div id="start-title">Taschenspielplatz</div>
+  <div id="start-welcome">
+    <img id="start-logo" src="assets/app_logo.png" alt="Taschenspielplatz">
+    <div id="start-subtitle">Dein kleiner Spielplatz für unterwegs!</div>
+    <div id="start-howto">
+      <div class="howto-step"><span class="howto-icon">👆</span> Tippe auf ein Fahrzeug um es auszuwählen</div>
+      <div class="howto-step"><span class="howto-icon">🚗</span> Ziehe es mit dem Finger über die Straßen</div>
+      <div class="howto-step"><span class="howto-icon">🔍</span> Zoome und verschiebe die Karte mit zwei Fingern</div>
+    </div>
+  </div>
+  <div id="start-divider"></div>
+  <div id="start-choose">Wähle eine Welt:</div>
   <div id="world-list"></div>
 </div>
 
