@@ -842,9 +842,9 @@ function setupInput() {
     gameState.scale = newScale;
   }, { passive: false });
 
-  // Prevent browser zoom/scroll
+  // Prevent browser zoom/scroll (but allow taps on UI buttons and world cards)
   document.addEventListener('touchstart', function(e) {
-    if (!e.target.closest('.ui-btn')) e.preventDefault();
+    if (!e.target.closest('.ui-btn') && !e.target.closest('.world-card') && !e.target.closest('#start-screen')) e.preventDefault();
   }, { passive: false });
   document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
   document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
