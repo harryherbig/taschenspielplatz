@@ -644,6 +644,125 @@ function drawVehicle(v, isActive) {
   ctx.restore();
 }
 
+function drawNightOverlay(activeV) {
+  var cw = canvas.width, ch = canvas.height;
+  var scale = gameState.scale;
+  var panX = gameState.panX, panY = gameState.panY;
+
+  // Dark overlay covering the entire canvas
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(8, 8, 35, 0.55)';
+  ctx.fillRect(0, 0, cw, ch);
+
+  // Cut light holes using destination-out
+  ctx.globalCompositeOperation = 'destination-out';
+
+  // All vehicles get a small ambient light
+  for (var i = 0; i < gameState.vehicles.length; i++) {
+    var v = gameState.vehicles[i];
+    var vsx = v.x * scale + panX;
+    var vsy = v.y * scale + panY;
+    var cs = getCarSize(v.sizeMul);
+    var vSize = Math.max(cs.w, cs.h) * scale;
+    var isActive = (v.id === gameState.activeVehicleId);
+
+    var ambientR = isActive ? vSize * 1.8 : vSize * 0.6;
+    var ambientAlpha = isActive ? 0.85 : 0.3;
+
+    var ambGrad = ctx.createRadialGradient(vsx, vsy, 0, vsx, vsy, ambientR);
+    ambGrad.addColorStop(0, 'rgba(0,0,0,' + ambientAlpha + ')');
+    ambGrad.addColorStop(0.5, 'rgba(0,0,0,' + (ambientAlpha * 0.5) + ')');
+    ambGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = ambGrad;
+    ctx.beginPath();
+    ctx.arc(vsx, vsy, ambientR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Active vehicle gets headlight cone
+    if (isActive) {
+      var rotRad = (v.angle + 90) * Math.PI / 180;
+      // Direction the vehicle is facing (sprite hood points UP, +90 rotation)
+      var dirX = Math.cos(rotRad - Math.PI / 2);
+      var dirY = Math.sin(rotRad - Math.PI / 2);
+
+      var coneLen = vSize * 3.5;
+      var coneSpread = 0.42; // radians (~24 degrees half-angle)
+
+      // Front of vehicle offset
+      var frontX = vsx + dirX * vSize * 0.35;
+      var frontY = vsy + dirY * vSize * 0.35;
+
+      // Cone tip far ahead
+      var tipX = frontX + dirX * coneLen;
+      var tipY = frontY + dirY * coneLen;
+
+      // Cone gradient from front to tip
+      var coneGrad = ctx.createRadialGradient(frontX, frontY, 0, frontX, frontY, coneLen);
+      coneGrad.addColorStop(0, 'rgba(0,0,0,0.9)');
+      coneGrad.addColorStop(0.4, 'rgba(0,0,0,0.6)');
+      coneGrad.addColorStop(0.8, 'rgba(0,0,0,0.2)');
+      coneGrad.addColorStop(1, 'rgba(0,0,0,0)');
+
+      // Draw cone shape
+      var perpX = -dirY;
+      var perpY = dirX;
+      var nearHalfW = vSize * 0.2;
+      var farHalfW = Math.sin(coneSpread) * coneLen;
+
+      ctx.fillStyle = coneGrad;
+      ctx.beginPath();
+      ctx.moveTo(frontX + perpX * nearHalfW, frontY + perpY * nearHalfW);
+      ctx.lineTo(tipX + perpX * farHalfW, tipY + perpY * farHalfW);
+      ctx.lineTo(tipX - perpX * farHalfW, tipY - perpY * farHalfW);
+      ctx.lineTo(frontX - perpX * nearHalfW, frontY - perpY * nearHalfW);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // Restore to paint the warm light tint back (additive color in the lit areas)
+  ctx.globalCompositeOperation = 'source-over';
+
+  // Active vehicle: warm tinted glow on the ground
+  if (activeV) {
+    var asx = activeV.x * scale + panX;
+    var asy = activeV.y * scale + panY;
+    var acs = getCarSize(activeV.sizeMul);
+    var aSize = Math.max(acs.w, acs.h) * scale;
+    var g = activeV.glow || [255, 220, 100];
+
+    var warmR = aSize * 1.5;
+    var warmGrad = ctx.createRadialGradient(asx, asy, 0, asx, asy, warmR);
+    warmGrad.addColorStop(0, 'rgba(' + g[0] + ',' + g[1] + ',' + g[2] + ',0.12)');
+    warmGrad.addColorStop(0.5, 'rgba(' + g[0] + ',' + g[1] + ',' + g[2] + ',0.05)');
+    warmGrad.addColorStop(1, 'rgba(' + g[0] + ',' + g[1] + ',' + g[2] + ',0)');
+    ctx.fillStyle = warmGrad;
+    ctx.beginPath();
+    ctx.arc(asx, asy, warmR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Warm headlight tint
+    var hRotRad = (activeV.angle + 90) * Math.PI / 180;
+    var hDirX = Math.cos(hRotRad - Math.PI / 2);
+    var hDirY = Math.sin(hRotRad - Math.PI / 2);
+    var hFrontX = asx + hDirX * aSize * 0.35;
+    var hFrontY = asy + hDirY * aSize * 0.35;
+    var hConeLen = aSize * 3.0;
+
+    var hGrad = ctx.createRadialGradient(hFrontX, hFrontY, 0, hFrontX, hFrontY, hConeLen);
+    hGrad.addColorStop(0, 'rgba(255, 250, 200, 0.10)');
+    hGrad.addColorStop(0.5, 'rgba(255, 250, 200, 0.04)');
+    hGrad.addColorStop(1, 'rgba(255, 250, 200, 0)');
+    ctx.fillStyle = hGrad;
+    ctx.beginPath();
+    ctx.arc(hFrontX, hFrontY, hConeLen, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
 function render() {
   var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
   var cw = canvas.width, ch = canvas.height;
@@ -667,6 +786,11 @@ function render() {
   // Active vehicle on top
   var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
   if (activeV) drawVehicle(activeV, true);
+
+  // Night mode: canvas-based darkness with light cutouts
+  if (gameState.isNight) {
+    drawNightOverlay(activeV);
+  }
 }
 
 // ============================================================
@@ -748,6 +872,13 @@ function updateVehicles(dt) {
     var ry = smoothDamp(v.y, v.targetY, v.vy, DRAG_SMOOTH_TIME, curSpeed, dt);
     v.x = rx.val; v.vx = rx.vel;
     v.y = ry.val; v.vy = ry.vel;
+
+    // Clamp to world bounds
+    var halfW = cs.w * 0.4, halfH = cs.h * 0.4;
+    if (v.x < halfW)          { v.x = halfW;          v.vx = 0; }
+    if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; }
+    if (v.y < halfH)          { v.y = halfH;          v.vy = 0; }
+    if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; }
   }
 }
 
@@ -882,8 +1013,8 @@ function setupInput() {
       if (isDragging && draggedVehicle) {
         // Update target — physics runs in game loop
         var wp = screenToWorld(e.clientX, e.clientY);
-        draggedVehicle.targetX = wp.x;
-        draggedVehicle.targetY = wp.y;
+        draggedVehicle.targetX = Math.max(0, Math.min(worldW, wp.x));
+        draggedVehicle.targetY = Math.max(0, Math.min(worldH, wp.y));
         lastPanX = e.clientX; lastPanY = e.clientY;
       } else if (isPanning) {
         gameState.panX += dx; gameState.panY += dy;
@@ -993,9 +1124,9 @@ function setupUI() {
 }
 
 function applyNightMode() {
-  var overlay = document.getElementById('night-overlay');
+  // Night darkness is rendered on the canvas (drawNightOverlay) — disable CSS overlay
+  document.getElementById('night-overlay').classList.remove('active');
   var btn = document.getElementById('btn-daynight');
-  overlay.classList.toggle('active', gameState.isNight);
   btn.innerHTML = gameState.isNight ? '&#x1F319;' : '&#x2600;';
 }
 
