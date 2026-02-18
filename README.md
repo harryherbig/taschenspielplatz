@@ -5,9 +5,9 @@
 <h1 align="center">Taschenspielplatz</h1>
 
 <p align="center">
-  <strong>Spielen ohne Spielregeln.</strong><br>
-  An interactive miniature city for toddlers. No scores, no levels, no rules.<br>
-  Just tiny cars on tiny roads.
+  <strong>Not a game. A stage.</strong><br>
+  A digital play board for little hands. No scores, no levels, no rules.<br>
+  The story is told by the child.
 </p>
 
 <p align="center">
@@ -18,46 +18,55 @@
 
 ## What is this?
 
-A pocket-sized playground for kids aged 2-5. Hand them your phone and they'll steer colorful cars through a little town by tapping where they want to go. That's it. No tutorial, no fail state, no grown-up complexity.
+Taschenspielplatz is not another kids' game. It's a digital play board — a reactive stage where the play happens in real life. Children play with their parents or alone, telling stories with visual and tactile support from the app. The fire truck races to the hospital. The ADAC tows the broken car. The ambulance rushes through the night with its lights on. None of this is scripted. The child decides what happens.
 
 Built for the in-between moments: car rides, restaurants, waiting rooms. The playground for when the real one is too far away.
 
-## How it works
-
-- **Tap a car** to select it (it glows)
-- **Tap the road** to drive there
-- **Drag** to pan around the world
-- **Pinch** to zoom in and out
-- **Day/night toggle** in the corner
-
-5 cars with different colors and speeds. The active car pathfinds along the road network. Switch between them anytime.
-
-## Design decisions
+## Philosophy
 
 **No sound.** The app is played in cars and restaurants. Parents hand it over without worry. The kid makes the engine noises themselves.
 
-**No text.** The target audience can't read. Everything is communicated through interaction.
-
 **No gamification.** No points, no stars, no streaks, no quests. The app wants nothing from the child. It's a reactive stage where the child decides what happens.
 
-**Single file.** One `index.html`, no build step, no framework, no dependencies. Open it in a browser and it works.
+**No text.** The target audience can't read. Everything is communicated through interaction.
+
+**No rules.** There's no way to win and no way to lose. No tutorial, no fail state, no grown-up complexity. Just tiny cars on tiny roads.
+
+## How it works
+
+- **Tap a vehicle** to select it (it glows)
+- **Drag** to steer it through the streets
+- **Pinch** to zoom in and out
+- **Two-finger drag** to pan around the world
+- **Day/night toggle** — vehicles light up the road with headlights at night
+
+7 vehicles with different sizes and speeds. Switch between them anytime.
+
+## Asset Packs
+
+Each world comes bundled with its own vehicles as an asset pack. The city pack ships with emergency vehicles (fire trucks, ambulance, ADAC) and a normal car. Future packs could include construction sites, farms, or harbors — each with their own themed vehicles.
+
+```
+assets/packs/city/
+├── world.png
+├── vehicle_normal.png
+├── vehicle_fire_truck.png
+├── vehicle_fire_car.png
+├── vehicle_fire_medium.png
+├── vehicle_fire_venus.png
+├── vehicle_ambulance.png
+└── vehicle_adac.png
+```
 
 ## Tech
 
-- Canvas 2D rendering with viewport clipping (only visible tiles are drawn)
-- Tile-based 20x20 grid with directional road connectivity
-- BFS pathfinding on the road network
+- Single `index.html`, no build step, no framework, no dependencies
+- Canvas 2D rendering with pan/zoom viewport
+- SmoothDamp physics (critically-damped spring) for vehicle movement
 - Pointer Events API for unified touch/mouse handling
-- Hue-rotated car sprites via offscreen canvas
-- Per-vehicle animation: smoothstep interpolation, body tilt on curves, squash/stretch on start/stop
-- Soft camera follow with user-override detection
-- localStorage persistence (vehicle positions, active car, day/night, viewport)
-
-The world is a pure data object, separated from the renderer. Future editors, generators, or JSON files can produce the world — the renderer just draws whatever it gets.
-
-## Assets
-
-Hand-crafted tile sprites: grass, straight road, curved road, T-junction, and 4-way crossroad. One car sprite, recolored at runtime via CSS `hue-rotate()` filter.
+- Per-pack sprite loading with offscreen canvas caching
+- Night mode with canvas-composited darkness and per-vehicle light cutouts
+- Per-pack localStorage persistence (vehicle positions, viewport, day/night)
 
 ## Running locally
 

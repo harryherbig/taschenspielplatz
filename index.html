@@ -48,35 +48,41 @@ html, body {
   margin-bottom: 16px;
 }
 
-#start-subtitle {
-  font-size: 16px;
-  font-weight: 500;
-  color: rgba(255,255,255,0.7);
-  margin-bottom: 20px;
-  line-height: 1.4;
+#start-tagline {
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.9);
+  letter-spacing: 0.3px;
+  margin-bottom: 8px;
 }
 
-#start-howto {
+#start-subtitle {
+  font-size: 14px;
+  font-weight: 400;
+  color: rgba(255,255,255,0.5);
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+
+#start-philosophy {
   display: flex; flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
 }
 
-.howto-step {
-  display: flex; align-items: center; gap: 10px;
-  font-size: 14px;
-  color: rgba(255,255,255,0.6);
+.philosophy-item {
+  font-size: 13px;
+  color: rgba(255,255,255,0.5);
   text-align: left;
-  padding: 8px 12px;
+  padding: 10px 14px;
   border-radius: 10px;
-  background: rgba(255,255,255,0.05);
+  background: rgba(255,255,255,0.04);
+  line-height: 1.5;
 }
 
-.howto-icon {
-  font-size: 20px;
-  flex-shrink: 0;
-  width: 28px;
-  text-align: center;
+.philosophy-label {
+  color: rgba(255,255,255,0.85);
+  font-weight: 600;
 }
 
 #start-divider {
@@ -218,11 +224,12 @@ html, body {
 <div id="start-screen">
   <div id="start-welcome">
     <img id="start-logo" src="assets/app_logo.png" alt="Taschenspielplatz">
-    <div id="start-subtitle">Dein kleiner Spielplatz für unterwegs!</div>
-    <div id="start-howto">
-      <div class="howto-step"><span class="howto-icon">👆</span> Tippe auf ein Fahrzeug um es auszuwählen</div>
-      <div class="howto-step"><span class="howto-icon">🚗</span> Ziehe es mit dem Finger über die Straßen</div>
-      <div class="howto-step"><span class="howto-icon">🔍</span> Zoome und verschiebe die Karte mit zwei Fingern</div>
+    <div id="start-tagline">Kein Spiel. Ein Spielbrett.</div>
+    <div id="start-subtitle">Ein digitales Spielbrett für kleine Hände. Die Geschichte erzählt dein Kind selbst.</div>
+    <div id="start-philosophy">
+      <div class="philosophy-item"><span class="philosophy-label">Keine Punkte.</span> Keine Sterne, keine Level, keine Regeln. Die App will nichts vom Kind.</div>
+      <div class="philosophy-item"><span class="philosophy-label">Kein Ton.</span> Perfekt für Auto, Restaurant und Wartezimmer. Die Motorengeräusche macht dein Kind selbst.</div>
+      <div class="philosophy-item"><span class="philosophy-label">Freies Spiel.</span> Tippe auf ein Fahrzeug, ziehe es mit dem Finger durch die Stadt. Das war's.</div>
     </div>
   </div>
   <div id="start-divider"></div>
