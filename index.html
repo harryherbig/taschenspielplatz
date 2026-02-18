@@ -200,10 +200,10 @@ const VEHICLE_SPRITES = ['vehicle_normal', 'vehicle_firetruck', 'vehicle_ambulan
 // sizeMul: size relative to the normal car (1.0 = base)
 // startFX/startFY: spread around center of map so they land on roads in most worlds
 const VEHICLE_DEFS = [
-  { id: 'v-auto',         sprite: 'vehicle_normal',    sizeMul: 1.0, speedF: 0.084, startFX: 0.40, startFY: 0.40 },
-  { id: 'v-feuerwehr',    sprite: 'vehicle_firetruck', sizeMul: 1.7, speedF: 0.066, startFX: 0.55, startFY: 0.42 },
-  { id: 'v-krankenwagen', sprite: 'vehicle_ambulance', sizeMul: 1.4, speedF: 0.070, startFX: 0.45, startFY: 0.55 },
-  { id: 'v-adac',         sprite: 'vehicle_adac',      sizeMul: 1.2, speedF: 0.060, startFX: 0.35, startFY: 0.58 },
+  { id: 'v-auto',         sprite: 'vehicle_normal',    sizeMul: 1.0, speedF: 0.084, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
+  { id: 'v-feuerwehr',    sprite: 'vehicle_firetruck', sizeMul: 1.7, speedF: 0.066, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255] },
+  { id: 'v-krankenwagen', sprite: 'vehicle_ambulance', sizeMul: 1.4, speedF: 0.070, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
+  { id: 'v-adac',         sprite: 'vehicle_adac',      sizeMul: 1.2, speedF: 0.060, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30] },
 ];
 
 // Actual world pixel size — set when a world loads
@@ -407,6 +407,7 @@ function loadWorldImage(worldDef) {
 function createVehicle(def) {
   return {
     id: def.id, sprite: def.sprite, sizeMul: def.sizeMul || 1,
+    glow: def.glow,
     maxSpeed: def.speedF * worldW,
     x: def.startFX * worldW,
     y: def.startFY * worldH,
@@ -501,25 +502,34 @@ function drawVehicle(v, isActive) {
   var carH = cs.h * scale;
   var rotRad = (v.angle + 90) * Math.PI / 180;
 
-  if (isActive) {
-    ctx.save();
-    ctx.translate(sx, sy);
-    ctx.rotate(rotRad);
-    var pulse = 0.35 + 0.25 * Math.sin(gameState.pulseTime * 3);
-    ctx.shadowColor = 'rgba(255, 255, 100, ' + pulse + ')';
-    ctx.shadowBlur = Math.max(16, 28 * scale);
-    ctx.fillStyle = 'rgba(255, 255, 100, 0.01)';
-    ctx.fillRect(-carW/2-4, -carH/2-4, carW+8, carH+8);
-    ctx.restore();
-  }
-
+  // Soft round shadow beneath the vehicle for better visibility
   ctx.save();
   ctx.translate(sx, sy);
   ctx.rotate(rotRad);
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
-  ctx.shadowBlur = Math.max(4, 8 * scale);
-  ctx.shadowOffsetX = 3 * scale;
-  ctx.shadowOffsetY = 4 * scale;
+  var shadowRadius = Math.max(carW, carH) * 0.75;
+  var grad = ctx.createRadialGradient(0, 0, shadowRadius * 0.15, 0, 0, shadowRadius);
+  if (isActive) {
+    var pulse = 0.7 + 0.3 * Math.sin(gameState.pulseTime * 3);
+    var g = v.glow || [255, 220, 40];
+    grad.addColorStop(0, 'rgba(' + g[0] + ',' + g[1] + ',' + g[2] + ',' + pulse + ')');
+    grad.addColorStop(0.4, 'rgba(' + g[0] + ',' + g[1] + ',' + g[2] + ',' + (pulse * 0.6) + ')');
+    grad.addColorStop(0.75, 'rgba(' + g[0] + ',' + g[1] + ',' + g[2] + ',' + (pulse * 0.25) + ')');
+    grad.addColorStop(1, 'rgba(' + g[0] + ',' + g[1] + ',' + g[2] + ',0)');
+  } else {
+    grad.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
+    grad.addColorStop(0.5, 'rgba(0, 0, 0, 0.25)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  }
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(0, 0, shadowRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Draw the vehicle sprite
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(rotRad);
   ctx.drawImage(sprite, -carW/2, -carH/2, carW, carH);
   ctx.restore();
 }
