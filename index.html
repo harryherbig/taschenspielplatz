@@ -27,6 +27,7 @@ html, body {
   align-items: center;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   background: linear-gradient(135deg, #2d5016 0%, #1a3a0a 50%, #0f2205 100%);
   z-index: 200;
   transition: opacity 0.4s ease;
@@ -1090,7 +1091,9 @@ function setupInput() {
   document.addEventListener('touchstart', function(e) {
     if (!e.target.closest('.ui-btn') && !e.target.closest('.world-card') && !e.target.closest('#start-screen')) e.preventDefault();
   }, { passive: false });
-  document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
+  document.addEventListener('touchmove', function(e) {
+    if (currentScreen !== 'start') e.preventDefault();
+  }, { passive: false });
   document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
 }
 
