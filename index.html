@@ -279,13 +279,13 @@ const ASSET_PACKS = [
     worldImage: 'assets/packs/city/world.png',
     unlocked: true,
     vehicles: [
-      { id: 'v-auto',           sprite: 'vehicle_normal',       sizeMul: 1.0, speedF: 0.084, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
-      { id: 'v-feuerwehr',      sprite: 'vehicle_fire_truck',   sizeMul: 1.7, speedF: 0.066, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-car',  sprite: 'vehicle_fire_car',     sizeMul: 1.2, speedF: 0.078, startFX: 0.48, startFY: 0.48, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-med',  sprite: 'vehicle_fire_medium',  sizeMul: 1.4, speedF: 0.072, startFX: 0.52, startFY: 0.38, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-ven',  sprite: 'vehicle_fire_venus',   sizeMul: 1.3, speedF: 0.074, startFX: 0.38, startFY: 0.52, glow: [60, 120, 255] },
-      { id: 'v-krankenwagen',   sprite: 'vehicle_ambulance',    sizeMul: 1.4, speedF: 0.070, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
-      { id: 'v-adac',           sprite: 'vehicle_adac',         sizeMul: 1.2, speedF: 0.060, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30] },
+      { id: 'v-auto',           sprite: 'vehicle_normal',       sizeMul: 1.0, speedF: 0.101, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
+      { id: 'v-feuerwehr',      sprite: 'vehicle_fire_truck',   sizeMul: 1.7, speedF: 0.079, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-car',  sprite: 'vehicle_fire_car',     sizeMul: 1.2, speedF: 0.094, startFX: 0.48, startFY: 0.48, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-med',  sprite: 'vehicle_fire_medium',  sizeMul: 1.4, speedF: 0.086, startFX: 0.52, startFY: 0.38, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-ven',  sprite: 'vehicle_fire_venus',   sizeMul: 1.3, speedF: 0.089, startFX: 0.38, startFY: 0.52, glow: [60, 120, 255] },
+      { id: 'v-krankenwagen',   sprite: 'vehicle_ambulance',    sizeMul: 1.4, speedF: 0.084, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
+      { id: 'v-adac',           sprite: 'vehicle_adac',         sizeMul: 1.2, speedF: 0.072, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30], canTow: true },
     ],
   },
   // Future packs:
@@ -595,6 +595,9 @@ function createVehicle(def) {
     targetX: null, targetY: null,
     dragging: false,
     _lastTrackX: null, _lastTrackY: null,
+    canTow: def.canTow || false,
+    towingId: null,    // id of vehicle being towed (only for canTow vehicles)
+    towedById: null,   // id of vehicle towing this one
   };
 }
 
@@ -916,6 +919,9 @@ function updateVehicles(dt) {
   for (var i = 0; i < gameState.vehicles.length; i++) {
     var v = gameState.vehicles[i];
 
+    // Towed vehicles are fully controlled by updateTowing — skip here
+    if (v.towedById) continue;
+
     if (!v.dragging) {
       // Dampen velocity to zero when not dragging
       v.vx *= Math.max(0, 1 - 8 * dt);
@@ -962,7 +968,10 @@ function updateVehicles(dt) {
     var headX = Math.cos(headRad);
     var headY = Math.sin(headRad);
     var forwardDist = dx * headX + dy * headY; // dot product
-    if (forwardDist < 0) forwardDist = 0;      // no reversing
+    if (forwardDist < 0) {
+      // Allow slow reversing for tow trucks, block for others
+      forwardDist = v.towingId ? Math.abs(forwardDist) * 0.3 : 0;
+    }
 
     var targetSpeed = Math.min(curSpeed, forwardDist / dt);
     var desiredVx = headX * targetSpeed;
@@ -988,6 +997,105 @@ function updateVehicles(dt) {
     if (v.y < halfH)          { v.y = halfH;          v.vy = 0; }
     if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; }
   }
+
+  // --- TOWING ---
+  updateTowing(dt);
+}
+
+var TOW_ATTACH_DIST = 0.025;  // fraction of worldW — how close to auto-attach
+
+function updateTowing(dt) {
+  var vehicles = gameState.vehicles;
+
+  for (var i = 0; i < vehicles.length; i++) {
+    var tow = vehicles[i];
+    if (!tow.canTow) continue;
+
+    // If already towing — rope physics: front of towed is pinned to heck of tower
+    if (tow.towingId) {
+      var towed = vehicles.find(function(v) { return v.id === tow.towingId; });
+      if (!towed) { tow.towingId = null; continue; }
+
+      var towCs = getCarSize(tow.sizeMul);
+      var towedCs = getCarSize(towed.sizeMul);
+
+      // Anchor point: heck of the tow truck
+      var towHeadRad = tow.angle * Math.PI / 180;
+      var anchorX = tow.x - Math.cos(towHeadRad) * towCs.h * 0.5;
+      var anchorY = tow.y - Math.sin(towHeadRad) * towCs.h * 0.5;
+
+      // Rope physics: gradually turn towed vehicle toward the anchor,
+      // then position it at rope distance behind the anchor
+      var ropeLen = towedCs.h * 0.4;  // visible rope gap
+      var fullLen = towedCs.h * 0.5 + ropeLen;
+
+      // Direction from towed vehicle's current position to anchor = rope pull direction
+      var dxToAnchor = anchorX - towed.x;
+      var dyToAnchor = anchorY - towed.y;
+      var distToAnchor = Math.sqrt(dxToAnchor * dxToAnchor + dyToAnchor * dyToAnchor);
+
+      if (distToAnchor > 1) {
+        // Target angle: the direction the rope is pulling
+        var targetAngle = Math.atan2(dyToAnchor, dxToAnchor) * 180 / Math.PI;
+        var angleDiff = ((targetAngle - towed.angle + 540) % 360) - 180;
+        var ropeTurnRate = 120;
+        var maxTurn = ropeTurnRate * dt;
+        if (angleDiff > maxTurn) angleDiff = maxTurn;
+        else if (angleDiff < -maxTurn) angleDiff = -maxTurn;
+        towed.angle += angleDiff;
+        towed.angle = ((towed.angle % 360) + 360) % 360;
+      }
+
+      // Position: place towed vehicle so its front is at the anchor, along its own heading
+      var towedHeadRad = towed.angle * Math.PI / 180;
+      towed.x = anchorX - Math.cos(towedHeadRad) * fullLen;
+      towed.y = anchorY - Math.sin(towedHeadRad) * fullLen;
+
+      towed.vx = tow.vx;
+      towed.vy = tow.vy;
+      continue;
+    }
+
+    // Not towing yet — check proximity to other vehicles
+    if (!tow.dragging) continue;  // only attach while being driven
+    var towCs = getCarSize(tow.sizeMul);
+    var attachDist = TOW_ATTACH_DIST * worldW;
+    // Heck position of tower
+    var headRad = tow.angle * Math.PI / 180;
+    var heckX = tow.x - Math.cos(headRad) * towCs.h * 0.5;
+    var heckY = tow.y - Math.sin(headRad) * towCs.h * 0.5;
+
+    for (var j = 0; j < vehicles.length; j++) {
+      var other = vehicles[j];
+      if (other.id === tow.id) continue;
+      if (other.towedById) continue;  // already towed
+      if (other.canTow) continue;     // don't tow other towers
+      if (other.dragging) continue;   // don't grab vehicles being moved
+
+      var ddx = other.x - heckX;
+      var ddy = other.y - heckY;
+      if (ddx * ddx + ddy * ddy < attachDist * attachDist) {
+        tow.towingId = other.id;
+        other.towedById = tow.id;
+        other.dragging = false;
+        other.targetX = null;
+        other.targetY = null;
+        break;
+      }
+    }
+  }
+}
+
+function detachTowed(vehicleId) {
+  var vehicles = gameState.vehicles;
+  var towed = vehicles.find(function(v) { return v.id === vehicleId; });
+  if (!towed || !towed.towedById) return false;
+  var tower = vehicles.find(function(v) { return v.id === towed.towedById; });
+  if (tower) tower.towingId = null;
+  towed.towedById = null;
+  towed.vx = 0;
+  towed.vy = 0;
+  return true;
 }
 
 function cameraFollowActive(dt) {
@@ -1040,11 +1148,12 @@ function screenToWorld(sx, sy) {
   return { x: (sx - gameState.panX) / gameState.scale, y: (sy - gameState.panY) / gameState.scale };
 }
 
-function getVehicleAtScreen(clientX, clientY) {
+function getVehicleAtScreen(clientX, clientY, skipTowed) {
   var wp = screenToWorld(clientX, clientY);
   var best = null, bestDist = Infinity;
   for (var i = 0; i < gameState.vehicles.length; i++) {
     var v = gameState.vehicles[i];
+    if (skipTowed && v.towedById) continue;
     var cs = getCarSize(v.sizeMul);
     var threshold = Math.max(cs.w, cs.h) * 0.8;
     var dx = wp.x - v.x, dy = wp.y - v.y;
@@ -1081,8 +1190,8 @@ function setupInput() {
       isPanning = false;
       isDragging = false;
 
-      // Check if finger landed on a vehicle
-      var hitV = getVehicleAtScreen(e.clientX, e.clientY);
+      // Check if finger landed on a vehicle (skip towed vehicles entirely)
+      var hitV = getVehicleAtScreen(e.clientX, e.clientY, true);
       draggedVehicle = hitV || null;
     } else if (pArr.length >= 2) {
       // Second finger → cancel drag, switch to pinch
@@ -1158,11 +1267,14 @@ function setupInput() {
     delete pointers[e.pointerId];
     var elapsed = Date.now() - touchStartTime;
 
-    // Tap: select/deselect vehicle
+    // Tap: select/deselect vehicle, or detach towed vehicle
     if (!touchMoved && !wasDragging && elapsed < 400) {
       var tappedV = getVehicleAtScreen(tapStartX, tapStartY);
       if (tappedV) {
-        if (gameState.activeVehicleId === tappedV.id) {
+        // If tapped vehicle is being towed, detach it
+        if (tappedV.towedById) {
+          detachTowed(tappedV.id);
+        } else if (gameState.activeVehicleId === tappedV.id) {
           gameState.activeVehicleId = null;
         } else {
           gameState.activeVehicleId = tappedV.id;
