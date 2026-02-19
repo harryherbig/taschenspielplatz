@@ -879,10 +879,49 @@ function render() {
   var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
   if (activeV) drawVehicle(activeV, true);
 
+  // Tow button overlay
+  drawTowButton();
+
   // Night mode: canvas-based darkness with light cutouts
   if (gameState.isNight) {
     drawNightOverlay(activeV);
   }
+}
+
+function drawTowButton() {
+  if (!towButtonTarget) return;
+  var v = gameState.vehicles.find(function(vv) { return vv.id === towButtonTarget; });
+  if (!v) return;
+
+  var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
+  var sx = v.x * scale + panX;
+  var sy = v.y * scale + panY;
+  var cs = getCarSize(v.sizeMul);
+  var btnRadius = Math.max(cs.w, cs.h) * scale * 0.32;
+  btnRadius = Math.max(btnRadius, 20);
+
+  // Frosted glass circle
+  ctx.save();
+  ctx.filter = 'blur(4px)';
+  ctx.beginPath();
+  ctx.arc(sx, sy, btnRadius, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+  ctx.fill();
+  ctx.filter = 'none';
+
+  // Subtle border
+  ctx.beginPath();
+  ctx.arc(sx, sy, btnRadius, 0, Math.PI * 2);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+  ctx.stroke();
+
+  // Wrench emoji
+  ctx.font = Math.round(btnRadius * 0.9) + 'px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\uD83D\uDD27', sx, sy);
+  ctx.restore();
 }
 
 // ============================================================
@@ -1065,7 +1104,7 @@ function separateVehicles() {
   }
 }
 
-var TOW_ATTACH_DIST = 0.025;  // fraction of worldW — how close to auto-attach
+var towButtonTarget = null;   // vehicle id showing the wrench button (connect or disconnect)
 
 function updateTowing(dt) {
   var vehicles = gameState.vehicles;
@@ -1119,33 +1158,7 @@ function updateTowing(dt) {
       continue;
     }
 
-    // Not towing yet — check proximity to other vehicles
-    if (!tow.dragging) continue;  // only attach while being driven
-    var towCs = getCarSize(tow.sizeMul);
-    var attachDist = TOW_ATTACH_DIST * worldW;
-    // Heck position of tower
-    var headRad = tow.angle * Math.PI / 180;
-    var heckX = tow.x - Math.cos(headRad) * towCs.h * 0.5;
-    var heckY = tow.y - Math.sin(headRad) * towCs.h * 0.5;
-
-    for (var j = 0; j < vehicles.length; j++) {
-      var other = vehicles[j];
-      if (other.id === tow.id) continue;
-      if (other.towedById) continue;  // already towed
-      if (other.canTow) continue;     // don't tow other towers
-      if (other.dragging) continue;   // don't grab vehicles being moved
-
-      var ddx = other.x - heckX;
-      var ddy = other.y - heckY;
-      if (ddx * ddx + ddy * ddy < attachDist * attachDist) {
-        tow.towingId = other.id;
-        other.towedById = tow.id;
-        other.dragging = false;
-        other.targetX = null;
-        other.targetY = null;
-        break;
-      }
-    }
+    // Tow attachment is now handled via the UI tow button (see towButtonTarget)
   }
 }
 
@@ -1159,6 +1172,57 @@ function detachTowed(vehicleId) {
   towed.vx = 0;
   towed.vy = 0;
   return true;
+}
+
+function updateTowButton() {
+  towButtonTarget = null;
+  var vehicles = gameState.vehicles;
+  // Find the active ADAC truck
+  var adac = vehicles.find(function(v) { return v.canTow && v.id === gameState.activeVehicleId; });
+  if (!adac) return;
+
+  // If already towing, show disconnect button on the towed vehicle
+  if (adac.towingId) {
+    towButtonTarget = adac.towingId;
+    return;
+  }
+
+  // Find the closest towable vehicle within range (collision distance + small margin)
+  var adacCs = getCarSize(adac.sizeMul);
+  var adacR = Math.max(adacCs.w, adacCs.h) * 0.45;
+  var bestId = null, bestDist = Infinity;
+  for (var i = 0; i < vehicles.length; i++) {
+    var other = vehicles[i];
+    if (other.id === adac.id) continue;
+    if (other.towedById) continue;
+    if (other.canTow) continue;
+    var otherCs = getCarSize(other.sizeMul);
+    var otherR = Math.max(otherCs.w, otherCs.h) * 0.45;
+    var attachDist = adacR + otherR + otherR * 0.3; // collision dist + 30% margin
+    var dx = other.x - adac.x;
+    var dy = other.y - adac.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < attachDist && dist < bestDist) {
+      bestDist = dist;
+      bestId = other.id;
+    }
+  }
+  towButtonTarget = bestId;
+}
+
+function hitTestTowButton(clientX, clientY) {
+  if (!towButtonTarget) return null;
+  var v = gameState.vehicles.find(function(vv) { return vv.id === towButtonTarget; });
+  if (!v) return null;
+  var sx = v.x * gameState.scale + gameState.panX;
+  var sy = v.y * gameState.scale + gameState.panY;
+  var cs = getCarSize(v.sizeMul);
+  var btnRadius = Math.max(cs.w, cs.h) * gameState.scale * 0.32;
+  btnRadius = Math.max(btnRadius, 20);
+  var dx = clientX - sx;
+  var dy = clientY - sy;
+  if (dx * dx + dy * dy <= btnRadius * btnRadius) return towButtonTarget;
+  return null;
 }
 
 function cameraFollowActive(dt) {
@@ -1339,20 +1403,38 @@ function setupInput() {
     delete pointers[e.pointerId];
     var elapsed = Date.now() - touchStartTime;
 
-    // Tap: select/deselect vehicle, or detach towed vehicle
+    // Tap: check tow button first, then select/deselect vehicle
     if (!touchMoved && !wasDragging && elapsed < 400) {
-      var tappedV = getVehicleAtScreen(tapStartX, tapStartY);
-      if (tappedV) {
-        // If tapped vehicle is being towed, detach it
-        if (tappedV.towedById) {
-          detachTowed(tappedV.id);
-        } else if (gameState.activeVehicleId === tappedV.id) {
-          gameState.activeVehicleId = null;
-        } else {
-          gameState.activeVehicleId = tappedV.id;
+      var towBtnHit = hitTestTowButton(tapStartX, tapStartY);
+      if (towBtnHit) {
+        // Toggle towing
+        var adac = gameState.vehicles.find(function(v) { return v.canTow && v.id === gameState.activeVehicleId; });
+        if (adac) {
+          var target = gameState.vehicles.find(function(v) { return v.id === towBtnHit; });
+          if (target && target.towedById) {
+            // Disconnect
+            detachTowed(target.id);
+          } else if (target && adac && !adac.towingId) {
+            // Connect
+            adac.towingId = target.id;
+            target.towedById = adac.id;
+            target.dragging = false;
+            target.targetX = null;
+            target.targetY = null;
+          }
         }
-        gameState.cameraFollowing = false;
         savePackState(currentPack);
+      } else {
+        var tappedV = getVehicleAtScreen(tapStartX, tapStartY);
+        if (tappedV) {
+          if (gameState.activeVehicleId === tappedV.id) {
+            gameState.activeVehicleId = null;
+          } else {
+            gameState.activeVehicleId = tappedV.id;
+          }
+          gameState.cameraFollowing = false;
+          savePackState(currentPack);
+        }
       }
     }
 
@@ -1517,6 +1599,7 @@ function gameLoop(timestamp) {
 
   if (currentScreen === 'game') {
     updateVehicles(dt);
+    updateTowButton();
     cameraFollowActive(dt);
     render();
   }
