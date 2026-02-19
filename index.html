@@ -599,6 +599,8 @@ function createVehicle(def) {
     targetX: null, targetY: null,
     dragging: false,
     _lastTrackX: null, _lastTrackY: null,
+    aiTargetX: null, aiTargetY: null,  // autonomous roaming target
+    aiBrakeUntil: 0,                   // timestamp until which the vehicle is braking
     canTow: def.canTow || false,
     towingId: null,    // id of vehicle being towed (only for canTow vehicles)
     towedById: null,   // id of vehicle towing this one
@@ -957,6 +959,86 @@ var MAX_TURN_RATE_SLOW = 180;   // deg/sec at very low speed (tight maneuvering)
 var MAX_TURN_RATE_FAST = 60;    // deg/sec at full speed (highway feel)
 // SmoothDamp time — lower = snappier, higher = floatier
 var DRAG_SMOOTH_TIME = 0.015;
+var AI_SPEED_FACTOR = 0.18;       // fraction of maxSpeed for roaming
+var AI_TURN_RATE = 45;            // deg/sec for AI steering
+var AI_BRAKE_CHANCE = 0.008;      // chance per frame to start braking
+var AI_BRAKE_DURATION_MIN = 1.0;  // seconds
+var AI_BRAKE_DURATION_MAX = 3.0;
+
+function pickAITarget(v) {
+  var cs = getCarSize(v.sizeMul);
+  var margin = cs.h;
+  v.aiTargetX = margin + Math.random() * (worldW - 2 * margin);
+  v.aiTargetY = margin + Math.random() * (worldH - 2 * margin);
+}
+
+function updateAIRoaming(v, dt) {
+  var cs = getCarSize(v.sizeMul);
+  var now = gameState.pulseTime;
+
+  // Braking?
+  if (v.aiBrakeUntil > now) {
+    v.vx *= Math.max(0, 1 - 4 * dt);
+    v.vy *= Math.max(0, 1 - 4 * dt);
+    // Still sample tire tracks while slowing
+    var curVel = Math.sqrt(v.vx * v.vx + v.vy * v.vy);
+    if (curVel > v.maxSpeed * 0.02) {
+      v.x += v.vx * dt;
+      v.y += v.vy * dt;
+      sampleTireTrack(v, now);
+    }
+    return;
+  }
+
+  // Random chance to brake
+  if (Math.random() < AI_BRAKE_CHANCE) {
+    v.aiBrakeUntil = now + AI_BRAKE_DURATION_MIN + Math.random() * (AI_BRAKE_DURATION_MAX - AI_BRAKE_DURATION_MIN);
+    return;
+  }
+
+  // Pick a new target if none or reached
+  if (v.aiTargetX == null || v.aiTargetY == null) {
+    pickAITarget(v);
+  }
+  var dx = v.aiTargetX - v.x;
+  var dy = v.aiTargetY - v.y;
+  var dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < cs.h * 0.5) {
+    pickAITarget(v);
+    dx = v.aiTargetX - v.x;
+    dy = v.aiTargetY - v.y;
+    dist = Math.sqrt(dx * dx + dy * dy);
+  }
+
+  // Steer toward target
+  var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+  var angleDiff = ((targetAngle - v.angle + 540) % 360) - 180;
+  var maxTurn = AI_TURN_RATE * dt;
+  if (angleDiff > maxTurn) angleDiff = maxTurn;
+  else if (angleDiff < -maxTurn) angleDiff = -maxTurn;
+  v.angle += angleDiff;
+  v.angle = ((v.angle % 360) + 360) % 360;
+
+  // Move forward along heading
+  var speed = v.maxSpeed * AI_SPEED_FACTOR;
+  var headRad = v.angle * Math.PI / 180;
+  v.vx = Math.cos(headRad) * speed;
+  v.vy = Math.sin(headRad) * speed;
+  v.x += v.vx * dt;
+  v.y += v.vy * dt;
+
+  // Tire tracks
+  sampleTireTrack(v, now);
+
+  // Clamp to world bounds and pick new target if hitting edge
+  var halfW = cs.w * 0.4, halfH = cs.h * 0.4;
+  var hitEdge = false;
+  if (v.x < halfW)          { v.x = halfW;          v.vx = 0; hitEdge = true; }
+  if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; hitEdge = true; }
+  if (v.y < halfH)          { v.y = halfH;          v.vy = 0; hitEdge = true; }
+  if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; hitEdge = true; }
+  if (hitEdge) pickAITarget(v);
+}
 
 function updateVehicles(dt) {
   for (var i = 0; i < gameState.vehicles.length; i++) {
@@ -966,9 +1048,14 @@ function updateVehicles(dt) {
     if (v.towedById) continue;
 
     if (!v.dragging) {
-      // Dampen velocity to zero when not dragging
-      v.vx *= Math.max(0, 1 - 8 * dt);
-      v.vy *= Math.max(0, 1 - 8 * dt);
+      // Non-active vehicles roam autonomously
+      if (v.id === gameState.activeVehicleId) {
+        // Active but not being dragged — just brake
+        v.vx *= Math.max(0, 1 - 8 * dt);
+        v.vy *= Math.max(0, 1 - 8 * dt);
+        continue;
+      }
+      updateAIRoaming(v, dt);
       continue;
     }
 
