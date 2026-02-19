@@ -1002,8 +1002,67 @@ function updateVehicles(dt) {
     if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; }
   }
 
+  // --- COLLISION SEPARATION ---
+  separateVehicles();
+
   // --- TOWING ---
   updateTowing(dt);
+}
+
+function separateVehicles() {
+  var vehicles = gameState.vehicles;
+  // Run a few iterations to resolve chain collisions
+  for (var iter = 0; iter < 3; iter++) {
+    for (var i = 0; i < vehicles.length; i++) {
+      var a = vehicles[i];
+      var csA = getCarSize(a.sizeMul);
+      var rA = Math.max(csA.w, csA.h) * 0.45;
+
+      for (var j = i + 1; j < vehicles.length; j++) {
+        var b = vehicles[j];
+
+        // Skip collision between tow truck and the vehicle it's towing
+        if (a.towingId && a.towingId === b.id) continue;
+        if (b.towingId && b.towingId === a.id) continue;
+
+        var csB = getCarSize(b.sizeMul);
+        var rB = Math.max(csB.w, csB.h) * 0.45;
+
+        var dx = b.x - a.x;
+        var dy = b.y - a.y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        var minDist = rA + rB;
+
+        if (dist >= minDist || dist < 0.001) continue;
+
+        // Overlap — push apart
+        var overlap = minDist - dist;
+        var nx = dx / dist;
+        var ny = dy / dist;
+
+        // Dragged vehicle gets less push (20%), other gets 80%
+        var aWeight, bWeight;
+        if (a.dragging && b.dragging) {
+          aWeight = 0.5; bWeight = 0.5;
+        } else if (a.dragging) {
+          aWeight = 0.2; bWeight = 0.8;
+        } else if (b.dragging) {
+          aWeight = 0.8; bWeight = 0.2;
+        } else {
+          aWeight = 0.5; bWeight = 0.5;
+        }
+
+        // Towed vehicles are rigid — push the other vehicle fully
+        if (a.towedById) { aWeight = 0; bWeight = 1; }
+        if (b.towedById) { aWeight = 1; bWeight = 0; }
+
+        a.x -= nx * overlap * aWeight;
+        a.y -= ny * overlap * aWeight;
+        b.x += nx * overlap * bWeight;
+        b.y += ny * overlap * bWeight;
+      }
+    }
+  }
 }
 
 var TOW_ATTACH_DIST = 0.025;  // fraction of worldW — how close to auto-attach
