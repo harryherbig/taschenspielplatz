@@ -279,13 +279,13 @@ const ASSET_PACKS = [
     worldImage: 'assets/packs/city/world.png',
     unlocked: true,
     vehicles: [
-      { id: 'v-auto',           sprite: 'vehicle_normal',       sizeMul: 1.0, speedF: 0.101, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
-      { id: 'v-feuerwehr',      sprite: 'vehicle_fire_truck',   sizeMul: 1.7, speedF: 0.079, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-car',  sprite: 'vehicle_fire_car',     sizeMul: 1.2, speedF: 0.094, startFX: 0.48, startFY: 0.48, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-med',  sprite: 'vehicle_fire_medium',  sizeMul: 1.4, speedF: 0.086, startFX: 0.52, startFY: 0.38, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-ven',  sprite: 'vehicle_fire_venus',   sizeMul: 1.3, speedF: 0.089, startFX: 0.38, startFY: 0.52, glow: [60, 120, 255] },
-      { id: 'v-krankenwagen',   sprite: 'vehicle_ambulance',    sizeMul: 1.4, speedF: 0.084, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
-      { id: 'v-adac',           sprite: 'vehicle_adac',         sizeMul: 1.2, speedF: 0.072, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30], canTow: true },
+      { id: 'v-auto',           sprite: 'vehicle_normal',       sizeMul: 1.0, speedF: 0.202, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
+      { id: 'v-feuerwehr',      sprite: 'vehicle_fire_truck',   sizeMul: 1.7, speedF: 0.158, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-car',  sprite: 'vehicle_fire_car',     sizeMul: 1.2, speedF: 0.188, startFX: 0.48, startFY: 0.48, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-med',  sprite: 'vehicle_fire_medium',  sizeMul: 1.4, speedF: 0.172, startFX: 0.52, startFY: 0.38, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr-ven',  sprite: 'vehicle_fire_venus',   sizeMul: 1.3, speedF: 0.178, startFX: 0.38, startFY: 0.52, glow: [60, 120, 255] },
+      { id: 'v-krankenwagen',   sprite: 'vehicle_ambulance',    sizeMul: 1.4, speedF: 0.168, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
+      { id: 'v-adac',           sprite: 'vehicle_adac',         sizeMul: 1.2, speedF: 0.144, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30], canTow: true },
     ],
   },
   // Future packs:
@@ -914,10 +914,10 @@ function smoothDamp(current, target, currentVel, smoothTime, maxSpeed, dt) {
 }
 
 // Turn rate: slower when moving fast (like a real vehicle), tighter when slow/stopped
-var MAX_TURN_RATE_SLOW = 90;    // deg/sec at very low speed (tight maneuvering)
-var MAX_TURN_RATE_FAST = 30;    // deg/sec at full speed (highway feel)
+var MAX_TURN_RATE_SLOW = 180;   // deg/sec at very low speed (tight maneuvering)
+var MAX_TURN_RATE_FAST = 60;    // deg/sec at full speed (highway feel)
 // SmoothDamp time — lower = snappier, higher = floatier
-var DRAG_SMOOTH_TIME = 0.15;
+var DRAG_SMOOTH_TIME = 0.015;
 
 function updateVehicles(dt) {
   for (var i = 0; i < gameState.vehicles.length; i++) {
@@ -1198,6 +1198,11 @@ function setupInput() {
 
       // Check if finger landed on a vehicle (skip towed vehicles entirely)
       var hitV = getVehicleAtScreen(e.clientX, e.clientY, true);
+      // If no vehicle hit but there's an active vehicle, drive that one
+      if (!hitV && gameState.activeVehicleId) {
+        var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
+        if (activeV && !activeV.towedById) hitV = activeV;
+      }
       draggedVehicle = hitV || null;
     } else if (pArr.length >= 2) {
       // Second finger → cancel drag, switch to pinch
