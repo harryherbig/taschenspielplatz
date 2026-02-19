@@ -265,7 +265,7 @@ const WORLD_H = 2400;
 // Reference size: all positions/speeds are authored as fractions of this
 const REF_SIZE = 8192;
 
-// Vehicle sprites: all 1024x1024, hood pointing UP
+// Vehicle sprites: square, tightly cropped, hood pointing UP
 const CAR_SCALE_FACTOR = 0.065;  // base vehicle size in world = worldW * this
 
 // ============================================================
@@ -697,7 +697,7 @@ function lerpAngle(a, b, t) {
 }
 
 function getCarSize(sizeMul) {
-  // All vehicle sprites are square (1024x1024)
+  // All vehicle sprites are square, tightly cropped
   var carS = worldW * CAR_SCALE_FACTOR * (sizeMul || 1);
   return { w: carS, h: carS };
 }
@@ -1030,7 +1030,7 @@ function updateTowing(dt) {
 
       // Rope physics: gradually turn towed vehicle toward the anchor,
       // then position it at rope distance behind the anchor
-      var ropeLen = towedCs.h * 0.4;  // visible rope gap
+      var ropeLen = towedCs.h * 0.3;  // visible rope gap
       var fullLen = towedCs.h * 0.5 + ropeLen;
 
       // Direction from towed vehicle's current position to anchor = rope pull direction
@@ -1140,6 +1140,7 @@ var tapStartX = 0, tapStartY = 0;
 // Dragging state
 var draggedVehicle = null;   // vehicle being steered
 var isDragging = false;       // committed to dragging (past threshold)
+var isTouch = false;          // current interaction is touch (not mouse)
 
 function getPointerArray() { return Object.values(pointers); }
 
@@ -1183,7 +1184,7 @@ function setupInput() {
   viewport.addEventListener('pointerdown', function(e) {
     if (e.target.closest('.ui-btn')) return;
     e.preventDefault();
-    pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+    pointers[e.pointerId] = { x: e.clientX, y: e.clientY, type: e.pointerType };
     var pArr = getPointerArray();
 
     if (pArr.length === 1) {
@@ -1193,6 +1194,7 @@ function setupInput() {
       tapStartX = e.clientX; tapStartY = e.clientY;
       isPanning = false;
       isDragging = false;
+      isTouch = e.pointerType === 'touch';
 
       // Check if finger landed on a vehicle (skip towed vehicles entirely)
       var hitV = getVehicleAtScreen(e.clientX, e.clientY, true);
@@ -1218,6 +1220,8 @@ function setupInput() {
       var totalDist = Math.sqrt(totalDx * totalDx + totalDy * totalDy);
 
       // Commit to drag-car or pan-map once past threshold
+      // Touch: single finger only drags vehicles, never pans (use two fingers to pan)
+      // Mouse: single pointer can drag vehicles or pan the map
       if (!isPanning && !isDragging && totalDist > 10) {
         touchMoved = true;
         if (draggedVehicle) {
@@ -1225,7 +1229,7 @@ function setupInput() {
           draggedVehicle.dragging = true;
           gameState.activeVehicleId = draggedVehicle.id;
           gameState.cameraFollowing = false;
-        } else {
+        } else if (!isTouch) {
           isPanning = true;
           gameState.cameraFollowing = false;
         }
@@ -1298,7 +1302,7 @@ function setupInput() {
     } else if (pArr.length === 1) {
       var p = pArr[0];
       lastPanX = p.x; lastPanY = p.y;
-      isPanning = true;
+      isPanning = !isTouch;  // don't pan with remaining touch finger
     }
   }, { passive: false });
 
