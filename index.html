@@ -519,6 +519,7 @@ function sampleTireTrack(v, now) {
     angle: v.angle,
     width: cs.w * 0.35,
     time: now,
+    vid: v.id,
   });
 
   v._lastTrackX = v.x;
@@ -538,6 +539,9 @@ function drawTireTracks(now) {
   for (var i = 1; i < tireTrackSegments.length; i++) {
     var prev = tireTrackSegments[i - 1];
     var cur = tireTrackSegments[i];
+
+    // Don't connect segments from different vehicles
+    if (prev.vid !== cur.vid) continue;
 
     var age = now - cur.time;
     var alpha = Math.max(0, 1 - age / TRACK_FADE_TIME) * 0.3;
