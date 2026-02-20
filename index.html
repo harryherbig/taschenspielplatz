@@ -280,10 +280,10 @@ const ASSET_PACKS = [
     unlocked: true,
     vehicles: [
       { id: 'v-auto',           sprite: 'vehicle_normal',       sizeMul: 1.0, speedF: 0.202, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
-      { id: 'v-feuerwehr',      sprite: 'vehicle_fire_truck',   sizeMul: 1.7, speedF: 0.158, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-car',  sprite: 'vehicle_fire_car',     sizeMul: 1.2, speedF: 0.188, startFX: 0.48, startFY: 0.48, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-med',  sprite: 'vehicle_fire_medium',  sizeMul: 1.4, speedF: 0.172, startFX: 0.52, startFY: 0.38, glow: [60, 120, 255] },
-      { id: 'v-feuerwehr-ven',  sprite: 'vehicle_fire_venus',   sizeMul: 1.3, speedF: 0.178, startFX: 0.38, startFY: 0.52, glow: [60, 120, 255] },
+      { id: 'v-feuerwehr',      sprite: 'vehicle_fire_truck',   sizeMul: 1.7, speedF: 0.158, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255], canSpray: true },
+      { id: 'v-feuerwehr-car',  sprite: 'vehicle_fire_car',     sizeMul: 1.2, speedF: 0.188, startFX: 0.48, startFY: 0.48, glow: [60, 120, 255], canSpray: true },
+      { id: 'v-feuerwehr-med',  sprite: 'vehicle_fire_medium',  sizeMul: 1.4, speedF: 0.172, startFX: 0.52, startFY: 0.38, glow: [60, 120, 255], canSpray: true },
+      { id: 'v-feuerwehr-ven',  sprite: 'vehicle_fire_venus',   sizeMul: 1.3, speedF: 0.178, startFX: 0.38, startFY: 0.52, glow: [60, 120, 255], canSpray: true },
       { id: 'v-krankenwagen',   sprite: 'vehicle_ambulance',    sizeMul: 1.4, speedF: 0.168, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
       { id: 'v-adac',           sprite: 'vehicle_adac',         sizeMul: 1.2, speedF: 0.144, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30], canTow: true },
     ],
@@ -604,6 +604,8 @@ function createVehicle(def) {
     canTow: def.canTow || false,
     towingId: null,    // id of vehicle being towed (only for canTow vehicles)
     towedById: null,   // id of vehicle towing this one
+    canSpray: def.canSpray || false,
+    spraying: false,   // currently spraying water
   };
 }
 
@@ -881,8 +883,14 @@ function render() {
   var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
   if (activeV) drawVehicle(activeV, true);
 
+  // Water spray effect (below overlays, above vehicles)
+  drawWaterSpray();
+
   // Tow button overlay
   drawTowButton();
+
+  // Spray button overlay
+  drawSprayButton();
 
   // Night mode: canvas-based darkness with light cutouts
   if (gameState.isNight) {
@@ -923,6 +931,125 @@ function drawTowButton() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText('\uD83D\uDD27', sx, sy);
+  ctx.restore();
+}
+
+function getSprayButtonPos(v) {
+  // Position the button at the front of the vehicle
+  var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
+  var cs = getCarSize(v.sizeMul);
+  var headRad = v.angle * Math.PI / 180;
+  var offset = cs.h * 0.7;
+  return {
+    x: (v.x + Math.cos(headRad) * offset) * scale + panX,
+    y: (v.y + Math.sin(headRad) * offset) * scale + panY
+  };
+}
+
+function drawSprayButton() {
+  // Show spray button on active fire vehicle
+  var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
+  if (!activeV || !activeV.canSpray) return;
+
+  var scale = gameState.scale;
+  var cs = getCarSize(activeV.sizeMul);
+  var pos = getSprayButtonPos(activeV);
+  var btnRadius = Math.max(cs.w, cs.h) * scale * 0.28;
+  btnRadius = Math.max(btnRadius, 18);
+
+  ctx.save();
+
+  // Frosted glass circle
+  ctx.filter = 'blur(4px)';
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, btnRadius, 0, Math.PI * 2);
+  ctx.fillStyle = activeV.spraying ? 'rgba(100, 180, 255, 0.3)' : 'rgba(255, 255, 255, 0.2)';
+  ctx.fill();
+  ctx.filter = 'none';
+
+  // Subtle border
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, btnRadius, 0, Math.PI * 2);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+  ctx.stroke();
+
+  // Water droplet emoji
+  ctx.font = Math.round(btnRadius * 0.9) + 'px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\uD83D\uDCA7', pos.x, pos.y);
+
+  ctx.restore();
+}
+
+// Water spray — particles locked to vehicle heading (no physics coupling)
+var sprayParticles = [];
+var SPRAY_RANGE = 1.0;  // cone length as multiple of car height
+
+function updateSprayParticles(dt) {
+  var vehicles = gameState.vehicles;
+
+  // Spawn particles for spraying vehicles
+  for (var i = 0; i < vehicles.length; i++) {
+    var v = vehicles[i];
+    if (!v.spraying) continue;
+
+    var cs = getCarSize(v.sizeMul);
+    var headRad = v.angle * Math.PI / 180;
+    var nozzleX = v.x + Math.cos(headRad) * cs.h * 0.5;
+    var nozzleY = v.y + Math.sin(headRad) * cs.h * 0.5;
+
+    // Fixed spray speed based on car size, NOT vehicle velocity
+    var spraySpeed = cs.h * SPRAY_RANGE / 0.5; // reach full range in ~0.5s
+    var count = Math.round(6 + Math.random() * 3);
+    for (var p = 0; p < count; p++) {
+      var spread = (Math.random() - 0.5) * 0.6;
+      var angle = headRad + spread;
+      sprayParticles.push({
+        x: nozzleX,
+        y: nozzleY,
+        vx: Math.cos(angle) * spraySpeed,
+        vy: Math.sin(angle) * spraySpeed,
+        life: 0.4 + Math.random() * 0.3,
+        maxLife: 0.4 + Math.random() * 0.3,
+        size: cs.w * (0.03 + Math.random() * 0.04),
+      });
+    }
+  }
+
+  // Update particles — simple constant velocity, no interaction with vehicles
+  for (var j = sprayParticles.length - 1; j >= 0; j--) {
+    var sp = sprayParticles[j];
+    sp.x += sp.vx * dt;
+    sp.y += sp.vy * dt;
+    sp.vx *= Math.max(0, 1 - 2 * dt); // gentle slowdown
+    sp.vy *= Math.max(0, 1 - 2 * dt);
+    sp.life -= dt;
+    if (sp.life <= 0) {
+      sprayParticles.splice(j, 1);
+    }
+  }
+}
+
+function drawWaterSpray() {
+  if (sprayParticles.length === 0) return;
+  var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
+
+  ctx.save();
+  for (var i = 0; i < sprayParticles.length; i++) {
+    var sp = sprayParticles[i];
+    var alpha = (sp.life / sp.maxLife) * 0.55;
+    var sx = sp.x * scale + panX;
+    var sy = sp.y * scale + panY;
+    var t = Math.max(0, Math.min(1, 1 - sp.life / sp.maxLife));
+    var r = sp.size * scale * (1 + t * 1.5); // grow as they travel
+
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(100, 180, 255, ' + alpha + ')';
+    ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -1312,6 +1439,18 @@ function hitTestTowButton(clientX, clientY) {
   return null;
 }
 
+function hitTestSprayButton(clientX, clientY) {
+  var activeV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
+  if (!activeV || !activeV.canSpray) return false;
+  var pos = getSprayButtonPos(activeV);
+  var cs = getCarSize(activeV.sizeMul);
+  var btnRadius = Math.max(cs.w, cs.h) * gameState.scale * 0.28;
+  btnRadius = Math.max(btnRadius, 18);
+  var dx = clientX - pos.x;
+  var dy = clientY - pos.y;
+  return dx * dx + dy * dy <= btnRadius * btnRadius;
+}
+
 function cameraFollowActive(dt) {
   if (!gameState.cameraFollowing) return;
   var v = gameState.vehicles.find(function(vv) { return vv.id === gameState.activeVehicleId; });
@@ -1490,19 +1629,20 @@ function setupInput() {
     delete pointers[e.pointerId];
     var elapsed = Date.now() - touchStartTime;
 
-    // Tap: check tow button first, then select/deselect vehicle
+    // Tap: check spray button, then tow button, then select/deselect vehicle
     if (!touchMoved && !wasDragging && elapsed < 400) {
-      var towBtnHit = hitTestTowButton(tapStartX, tapStartY);
-      if (towBtnHit) {
+      if (hitTestSprayButton(tapStartX, tapStartY)) {
+        // Toggle water spray
+        var sprayV = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
+        if (sprayV) sprayV.spraying = !sprayV.spraying;
+      } else if (hitTestTowButton(tapStartX, tapStartY)) {
         // Toggle towing
         var adac = gameState.vehicles.find(function(v) { return v.canTow && v.id === gameState.activeVehicleId; });
         if (adac) {
-          var target = gameState.vehicles.find(function(v) { return v.id === towBtnHit; });
+          var target = gameState.vehicles.find(function(v) { return v.id === hitTestTowButton(tapStartX, tapStartY); });
           if (target && target.towedById) {
-            // Disconnect
             detachTowed(target.id);
-          } else if (target && adac && !adac.towingId) {
-            // Connect
+          } else if (target && !adac.towingId) {
             adac.towingId = target.id;
             target.towedById = adac.id;
             target.dragging = false;
@@ -1514,6 +1654,9 @@ function setupInput() {
       } else {
         var tappedV = getVehicleAtScreen(tapStartX, tapStartY);
         if (tappedV) {
+          // Stop spraying on previous active vehicle
+          var prevActive = gameState.vehicles.find(function(v) { return v.id === gameState.activeVehicleId; });
+          if (prevActive && prevActive.spraying) prevActive.spraying = false;
           if (gameState.activeVehicleId === tappedV.id) {
             gameState.activeVehicleId = null;
           } else {
@@ -1686,6 +1829,7 @@ function gameLoop(timestamp) {
 
   if (currentScreen === 'game') {
     updateVehicles(dt);
+    updateSprayParticles(dt);
     updateTowButton();
     cameraFollowActive(dt);
     render();
