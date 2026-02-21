@@ -12,7 +12,7 @@
 html, body {
   width: 100%; height: 100%;
   overflow: hidden;
-  background: #1a3a0a;
+  background: #0a1a3a;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   touch-action: none;
   user-select: none;
@@ -28,7 +28,7 @@ html, body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
-  background: linear-gradient(135deg, #2d5016 0%, #1a3a0a 50%, #0f2205 100%);
+  background: linear-gradient(135deg, #0a2a5a 0%, #0a1a3a 50%, #051225 100%);
   z-index: 200;
   transition: opacity 0.4s ease;
   padding: 40px 20px 40px;
@@ -119,7 +119,7 @@ html, body {
 .world-card-thumb {
   width: 100%;
   aspect-ratio: 4/3;
-  background: #3a7a20;
+  background: #1a4a7a;
   display: flex; align-items: center; justify-content: center;
   position: relative;
   overflow: hidden;
@@ -142,7 +142,7 @@ html, body {
   position: fixed; inset: 0;
   display: none;
   overflow: hidden;
-  background: #2a5a1e;
+  background: #1a3a6a;
 }
 #game-screen.active { display: block; }
 
@@ -256,7 +256,7 @@ html, body {
 // CONFIG
 // ============================================================
 
-const STORAGE_VERSION = 'v6';
+const STORAGE_VERSION = 'v7';
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 3;
 const WORLD_W = 2400;
@@ -264,6 +264,10 @@ const WORLD_H = 2400;
 
 // Reference size: all positions/speeds are authored as fractions of this
 const REF_SIZE = 8192;
+
+// Water zone: how far vehicles can go beyond the world image (fraction of worldW)
+const WATER_MARGIN = 0.25;
+const AMPHIBIOUS_WATER_SPEED = 0.5;  // speed multiplier in water (half speed)
 
 // Vehicle sprites: square, tightly cropped, hood pointing UP
 const CAR_SCALE_FACTOR = 0.065;  // base vehicle size in world = worldW * this
@@ -286,6 +290,7 @@ const ASSET_PACKS = [
       { id: 'v-feuerwehr-ven',  sprite: 'vehicle_fire_venus',   sizeMul: 1.3, speedF: 0.178, startFX: 0.38, startFY: 0.52, glow: [60, 120, 255], canSpray: true },
       { id: 'v-krankenwagen',   sprite: 'vehicle_ambulance',    sizeMul: 1.4, speedF: 0.168, startFX: 0.45, startFY: 0.55, glow: [60, 120, 255] },
       { id: 'v-adac',           sprite: 'vehicle_adac',         sizeMul: 1.2, speedF: 0.144, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30], canTow: true },
+      { id: 'v-amphibious',     sprite: 'vehivle_fire_amphibious', sizeMul: 1.3, speedF: 0.170, startFX: 0.60, startFY: 0.50, glow: [30, 200, 180], canSpray: true, amphibious: true },
     ],
   },
   // Future packs:
@@ -306,7 +311,7 @@ function generatePlaceholderWorld(w, h) {
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
 
-  // Grass
+  // Land base (grass green — the world image is land surrounded by water)
   ctx.fillStyle = '#4a8c2a';
   ctx.fillRect(0, 0, w, h);
   for (let i = 0; i < 300; i++) {
@@ -383,7 +388,7 @@ function generatePlaceholderWorld(w, h) {
   // Roundabout center
   ctx.fillStyle = '#666';
   ctx.beginPath(); ctx.arc(1200,1200,120,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle = '#4a8c2a';
+  ctx.fillStyle = '#3a7a22';
   ctx.beginPath(); ctx.arc(1200,1200,60,0,Math.PI*2); ctx.fill();
 
   // Pond
@@ -503,6 +508,9 @@ var TRACK_SAMPLE_DIST = 0.008;  // min distance between samples (fraction of wor
 var tireTrackSegments = [];     // array of { x, y, angle, width, time }
 
 function sampleTireTrack(v, now) {
+  // No tire tracks in water
+  if (isInWater(v.x, v.y)) return;
+
   var cs = getCarSize(v.sizeMul);
   var minDist = TRACK_SAMPLE_DIST * worldW;
   var last = v._lastTrackX;
@@ -606,7 +614,12 @@ function createVehicle(def) {
     towedById: null,   // id of vehicle towing this one
     canSpray: def.canSpray || false,
     spraying: false,   // currently spraying water
+    amphibious: def.amphibious || false,
   };
+}
+
+function isInWater(x, y) {
+  return x < 0 || x > worldW || y < 0 || y > worldH;
 }
 
 function initVehicles(pack) {
@@ -683,6 +696,19 @@ function migrateV5Storage() {
   } catch(e) {}
 }
 
+function migrateV6Storage() {
+  var OLD_KEY = 'taschenspielplatz_v6_city';
+  try {
+    var raw = localStorage.getItem(OLD_KEY);
+    if (!raw) return;
+    var newKey = 'taschenspielplatz_' + STORAGE_VERSION + '_city';
+    if (localStorage.getItem(newKey)) return;
+    var data = JSON.parse(raw);
+    data.vehicleCount = ASSET_PACKS[0].vehicles.length;
+    localStorage.setItem(newKey, JSON.stringify(data));
+  } catch(e) {}
+}
+
 // ============================================================
 // RENDERING
 // ============================================================
@@ -748,6 +774,28 @@ function drawVehicle(v, isActive) {
   ctx.rotate(rotRad);
   ctx.drawImage(sprite, -carW/2, -carH/2, carW, carH);
   ctx.restore();
+
+  // Water wake effect for amphibious vehicles in water
+  if (v.amphibious && isInWater(v.x, v.y)) {
+    var wakeSpeed = Math.sqrt(v.vx * v.vx + v.vy * v.vy);
+    if (wakeSpeed > 5) {
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(rotRad);
+      var wakeAlpha = Math.min(0.35, wakeSpeed / v.maxSpeed * 0.5);
+      var wakeR = Math.max(carW, carH) * 0.6;
+      // Bow wave arcs
+      for (var wi = 0; wi < 3; wi++) {
+        var wOff = (wi + 1) * wakeR * 0.3;
+        ctx.beginPath();
+        ctx.arc(0, -carH * 0.3 - wOff, wakeR * (0.5 + wi * 0.2), Math.PI * 0.6, Math.PI * 1.4);
+        ctx.strokeStyle = 'rgba(200, 230, 255, ' + (wakeAlpha * (1 - wi * 0.3)) + ')';
+        ctx.lineWidth = Math.max(1, 2 * gameState.scale);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
 }
 
 // Offscreen canvas for night overlay (reused each frame)
@@ -855,13 +903,43 @@ function drawNightOverlay(activeV) {
   }
 }
 
+function drawWaterBackground(cw, ch) {
+  var t = gameState.pulseTime;
+  var scale = gameState.scale;
+  var panX = gameState.panX, panY = gameState.panY;
+
+  ctx.save();
+  ctx.globalAlpha = 0.08;
+
+  // Draw subtle wave lines across the water area
+  var waveSpacing = 60 * Math.max(0.5, scale);
+  var amplitude = 4 * Math.max(0.5, scale);
+
+  ctx.strokeStyle = 'rgba(150, 200, 255, 1)';
+  ctx.lineWidth = Math.max(1, 1.5 * scale);
+
+  for (var wy = -amplitude; wy < ch + amplitude; wy += waveSpacing) {
+    ctx.beginPath();
+    for (var wx = 0; wx < cw; wx += 8) {
+      var waveY = wy + Math.sin((wx * 0.01) + t * 0.8 + wy * 0.02) * amplitude;
+      if (wx === 0) ctx.moveTo(wx, waveY);
+      else ctx.lineTo(wx, waveY);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function render() {
   var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
   var cw = canvas.width, ch = canvas.height;
 
   ctx.clearRect(0, 0, cw, ch);
-  ctx.fillStyle = '#4a8c2a';
+  ctx.fillStyle = '#1a4a7a';
   ctx.fillRect(0, 0, cw, ch);
+
+  // Animated water effect — subtle wave pattern
+  drawWaterBackground(cw, ch);
 
   if (worldImage) {
     var imgW = worldW * scale;
@@ -1095,8 +1173,15 @@ var AI_BRAKE_DURATION_MAX = 3.0;
 function pickAITarget(v) {
   var cs = getCarSize(v.sizeMul);
   var margin = cs.h;
-  v.aiTargetX = margin + Math.random() * (worldW - 2 * margin);
-  v.aiTargetY = margin + Math.random() * (worldH - 2 * margin);
+  if (v.amphibious) {
+    var waterExt = worldW * WATER_MARGIN;
+    // Amphibious AI can roam into water zone too
+    v.aiTargetX = -waterExt + margin + Math.random() * (worldW + 2 * waterExt - 2 * margin);
+    v.aiTargetY = -waterExt + margin + Math.random() * (worldH + 2 * waterExt - 2 * margin);
+  } else {
+    v.aiTargetX = margin + Math.random() * (worldW - 2 * margin);
+    v.aiTargetY = margin + Math.random() * (worldH - 2 * margin);
+  }
 }
 
 function updateAIRoaming(v, dt) {
@@ -1148,6 +1233,10 @@ function updateAIRoaming(v, dt) {
 
   // Move forward along heading
   var speed = v.maxSpeed * AI_SPEED_FACTOR;
+  // Amphibious AI vehicles slow down in water
+  if (v.amphibious && isInWater(v.x, v.y)) {
+    speed *= AMPHIBIOUS_WATER_SPEED;
+  }
   var headRad = v.angle * Math.PI / 180;
   v.vx = Math.cos(headRad) * speed;
   v.vy = Math.sin(headRad) * speed;
@@ -1157,13 +1246,21 @@ function updateAIRoaming(v, dt) {
   // Tire tracks
   sampleTireTrack(v, now);
 
-  // Clamp to world bounds and pick new target if hitting edge
+  // Clamp to bounds — amphibious can go into water zone
   var halfW = cs.w * 0.4, halfH = cs.h * 0.4;
   var hitEdge = false;
-  if (v.x < halfW)          { v.x = halfW;          v.vx = 0; hitEdge = true; }
-  if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; hitEdge = true; }
-  if (v.y < halfH)          { v.y = halfH;          v.vy = 0; hitEdge = true; }
-  if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; hitEdge = true; }
+  if (v.amphibious) {
+    var waterExt = worldW * WATER_MARGIN;
+    if (v.x < -waterExt + halfW)          { v.x = -waterExt + halfW;          v.vx = 0; hitEdge = true; }
+    if (v.x > worldW + waterExt - halfW)  { v.x = worldW + waterExt - halfW;  v.vx = 0; hitEdge = true; }
+    if (v.y < -waterExt + halfH)          { v.y = -waterExt + halfH;          v.vy = 0; hitEdge = true; }
+    if (v.y > worldH + waterExt - halfH)  { v.y = worldH + waterExt - halfH;  v.vy = 0; hitEdge = true; }
+  } else {
+    if (v.x < halfW)          { v.x = halfW;          v.vx = 0; hitEdge = true; }
+    if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; hitEdge = true; }
+    if (v.y < halfH)          { v.y = halfH;          v.vy = 0; hitEdge = true; }
+    if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; hitEdge = true; }
+  }
   if (hitEdge) pickAITarget(v);
 }
 
@@ -1217,6 +1314,10 @@ function updateVehicles(dt) {
 
     // 2) MOVE: only along the vehicle's heading direction (no strafing)
     var speed = v.maxSpeed;
+    // Amphibious vehicles slow down in water
+    if (v.amphibious && isInWater(v.x, v.y)) {
+      speed *= AMPHIBIOUS_WATER_SPEED;
+    }
     var approachScale = Math.min(1, dist / (cs.h * 2));
     var curSpeed = speed * (0.3 + 0.7 * approachScale);
 
@@ -1247,12 +1348,20 @@ function updateVehicles(dt) {
       sampleTireTrack(v, gameState.pulseTime);
     }
 
-    // Clamp to world bounds
+    // Clamp to bounds — amphibious vehicles can go into water (beyond world image)
     var halfW = cs.w * 0.4, halfH = cs.h * 0.4;
-    if (v.x < halfW)          { v.x = halfW;          v.vx = 0; }
-    if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; }
-    if (v.y < halfH)          { v.y = halfH;          v.vy = 0; }
-    if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; }
+    if (v.amphibious) {
+      var waterExt = worldW * WATER_MARGIN;
+      if (v.x < -waterExt + halfW)          { v.x = -waterExt + halfW;          v.vx = 0; }
+      if (v.x > worldW + waterExt - halfW)  { v.x = worldW + waterExt - halfW;  v.vx = 0; }
+      if (v.y < -waterExt + halfH)          { v.y = -waterExt + halfH;          v.vy = 0; }
+      if (v.y > worldH + waterExt - halfH)  { v.y = worldH + waterExt - halfH;  v.vy = 0; }
+    } else {
+      if (v.x < halfW)          { v.x = halfW;          v.vx = 0; }
+      if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; }
+      if (v.y < halfH)          { v.y = halfH;          v.vy = 0; }
+      if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; }
+    }
   }
 
   // --- COLLISION SEPARATION ---
@@ -1592,8 +1701,14 @@ function setupInput() {
       if (isDragging && draggedVehicle) {
         // Update target — physics runs in game loop
         var wp = screenToWorld(e.clientX, e.clientY);
-        draggedVehicle.targetX = Math.max(0, Math.min(worldW, wp.x));
-        draggedVehicle.targetY = Math.max(0, Math.min(worldH, wp.y));
+        if (draggedVehicle.amphibious) {
+          var wExt = worldW * WATER_MARGIN;
+          draggedVehicle.targetX = Math.max(-wExt, Math.min(worldW + wExt, wp.x));
+          draggedVehicle.targetY = Math.max(-wExt, Math.min(worldH + wExt, wp.y));
+        } else {
+          draggedVehicle.targetX = Math.max(0, Math.min(worldW, wp.x));
+          draggedVehicle.targetY = Math.max(0, Math.min(worldH, wp.y));
+        }
         lastPanX = e.clientX; lastPanY = e.clientY;
       } else if (isPanning) {
         gameState.panX += dx; gameState.panY += dy;
@@ -1844,6 +1959,7 @@ function gameLoop(timestamp) {
 
 function init() {
   migrateV5Storage();
+  migrateV6Storage();
   buildStartScreen();
   setupInput();
   setupUI();
