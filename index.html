@@ -1672,16 +1672,11 @@ function updateCrashAmbulanceResponse(v, dt) {
   var arriveThreshold = cs.h * 1.5;
 
   if (crashState.ambulanceArrived) {
-    // Parked at scene — brake and wait
+    // Parked at scene — brake and wait (timer is managed by updateCrashSystem)
     v.vx *= Math.max(0, 1 - 6 * dt);
     v.vy *= Math.max(0, 1 - 6 * dt);
     v.x += v.vx * dt;
     v.y += v.vy * dt;
-
-    crashState.ambulanceTimer += dt;
-    if (crashState.ambulanceTimer >= 3) {
-      crashState.ambulanceDeparted = true;
-    }
     return;
   }
 
@@ -1717,6 +1712,64 @@ function updateCrashAmbulanceResponse(v, dt) {
   if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; }
   if (v.y < halfH)          { v.y = halfH;          v.vy = 0; }
   if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; }
+}
+
+// Update towed crash car position to follow ADAC (rope physics).
+// Called from updateCrashSystem every frame, so it works even when player controls ADAC.
+function updateTowedCrashCarPosition(v, dt) {
+  var cs = getCarSize(v.sizeMul);
+  var carIdx = crashState.adacTargetCar;
+  var car = crashState.cars[carIdx];
+
+  // Rope physics: crash car follows ADAC rear
+  var towHeadRad = v.angle * Math.PI / 180;
+  var anchorX = v.x - Math.cos(towHeadRad) * cs.h * 0.5;
+  var anchorY = v.y - Math.sin(towHeadRad) * cs.h * 0.5;
+  var crashCarSize = worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL;
+  var ropeLen = crashCarSize * 0.3;
+  var fullLen = crashCarSize * 0.5 + ropeLen;
+
+  // Gradually turn crashed car toward anchor
+  var dxA = anchorX - car.x;
+  var dyA = anchorY - car.y;
+  var distA = Math.sqrt(dxA * dxA + dyA * dyA);
+  if (distA > 1) {
+    var towAngle = Math.atan2(dyA, dxA) * 180 / Math.PI;
+    var aDiff = ((towAngle - car.angle + 540) % 360) - 180;
+    var maxT = 120 * dt;
+    if (aDiff > maxT) aDiff = maxT;
+    else if (aDiff < -maxT) aDiff = -maxT;
+    car.angle += aDiff;
+    car.angle = ((car.angle % 360) + 360) % 360;
+  }
+  var carHeadRad = car.angle * Math.PI / 180;
+  car.x = anchorX - Math.cos(carHeadRad) * fullLen;
+  car.y = anchorY - Math.sin(carHeadRad) * fullLen;
+
+  // Check if arrived at parking
+  var parkOffset = carIdx === 1 ? worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL * 1.2 : 0;
+  var parkX = PARKING_SPACE.fx * worldW + parkOffset * Math.cos(45 * Math.PI / 180);
+  var parkY = PARKING_SPACE.fy * worldH + parkOffset * Math.sin(45 * Math.PI / 180);
+  var dpx = parkX - v.x;
+  var dpy = parkY - v.y;
+  var distToPark = Math.sqrt(dpx * dpx + dpy * dpy);
+  var arriveThreshold = cs.h * 1.2;
+
+  if (distToPark < arriveThreshold) {
+    // Arrived at parking — drop the car
+    car.towed = false;
+    car.towedToParking = true;
+    car.x = parkX;
+    car.y = parkY;
+    car.angle = 45;
+
+    if (carIdx === 0) {
+      crashState.adacTargetCar = 1;
+      crashState.adacPhase = 'returning';
+    } else {
+      crashState.adacPhase = 'done';
+    }
+  }
 }
 
 function updateCrashAdacResponse(v, dt) {
@@ -1854,60 +1907,12 @@ function updateCrashAdacResponse(v, dt) {
       crashState.adacPhase = carIdx === 0 ? 'attaching1' : 'attaching2';
       car.towed = true;
     }
-
-  } else if (phase === 'attaching1' || phase === 'attaching2') {
-    // Brief pause then start towing
-    crashState.adacPhase = carIdx === 0 ? 'towing-car1' : 'towing-car2';
-
   } else if (phase === 'towing-car1' || phase === 'towing-car2') {
-    // Drive to parking space, dragging the crashed car behind
-    // Offset car 2 perpendicular to the 45° parking angle
-    var parkOffset = carIdx === 1 ? crashCarSize * 1.2 : 0;
+    // Steer toward parking — rope physics + arrival handled by updateCrashSystem
+    var parkOffset = carIdx === 1 ? worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL * 1.2 : 0;
     var parkX = PARKING_SPACE.fx * worldW + parkOffset * Math.cos(45 * Math.PI / 180);
     var parkY = PARKING_SPACE.fy * worldH + parkOffset * Math.sin(45 * Math.PI / 180);
-    var dist = steerToward(parkX, parkY);
-
-    // Update crashed car position: follow behind ADAC (rope physics)
-    var towHeadRad = v.angle * Math.PI / 180;
-    var anchorX = v.x - Math.cos(towHeadRad) * cs.h * 0.5;
-    var anchorY = v.y - Math.sin(towHeadRad) * cs.h * 0.5;
-    var ropeLen = crashCarSize * 0.3;
-    var fullLen = crashCarSize * 0.5 + ropeLen;
-
-    // Gradually turn crashed car toward anchor
-    var dxA = anchorX - car.x;
-    var dyA = anchorY - car.y;
-    var distA = Math.sqrt(dxA * dxA + dyA * dyA);
-    if (distA > 1) {
-      var towAngle = Math.atan2(dyA, dxA) * 180 / Math.PI;
-      var aDiff = ((towAngle - car.angle + 540) % 360) - 180;
-      var maxT = 120 * dt;
-      if (aDiff > maxT) aDiff = maxT;
-      else if (aDiff < -maxT) aDiff = -maxT;
-      car.angle += aDiff;
-      car.angle = ((car.angle % 360) + 360) % 360;
-    }
-    var carHeadRad = car.angle * Math.PI / 180;
-    car.x = anchorX - Math.cos(carHeadRad) * fullLen;
-    car.y = anchorY - Math.sin(carHeadRad) * fullLen;
-
-    if (dist < arriveThreshold) {
-      // Arrived at parking — drop the car
-      car.towed = false;
-      car.towedToParking = true;
-      car.x = parkX;
-      car.y = parkY;
-      car.angle = 45;  // park at 45° to align with parking spaces
-
-      if (carIdx === 0) {
-        // Go back for car 2
-        crashState.adacTargetCar = 1;
-        crashState.adacPhase = 'returning';
-      } else {
-        crashState.adacPhase = 'done';
-      }
-    }
-
+    steerToward(parkX, parkY);
   } else if (phase === 'returning') {
     var car2 = crashState.cars[1];
     var dist = steerToward(car2.x, car2.y);
@@ -1922,7 +1927,39 @@ function updateCrashSystem(dt) {
   if (crashState.active) {
     crashState.elapsedTime += dt;
 
-    // ADAC now drives to scene immediately (phase set in startCrash)
+    // Ambulance timer always ticks (even if player controls the ambulance)
+    if (crashState.ambulanceArrived && !crashState.ambulanceDeparted) {
+      crashState.ambulanceTimer += dt;
+      if (crashState.ambulanceTimer >= 120) {
+        crashState.ambulanceDeparted = true;
+      }
+    }
+
+    // ADAC timer: starts driving after 60 seconds
+    if (crashState.adacPhase === 'waiting') {
+      crashState.adacStartTimer -= dt;
+      if (crashState.adacStartTimer <= 0) {
+        crashState.adacPhase = 'driving-to-crash';
+        crashState.adacTargetCar = 0;
+      }
+    }
+
+    // Attaching phases are instant transitions — run even if player controls ADAC
+    if (crashState.adacPhase === 'attaching1' || crashState.adacPhase === 'attaching2') {
+      var carIdx = crashState.adacTargetCar;
+      crashState.adacPhase = carIdx === 0 ? 'towing-car1' : 'towing-car2';
+    }
+
+    // Always update towed crash car to follow ADAC (even when player drags ADAC)
+    if (crashState.adacPhase === 'towing-car1' || crashState.adacPhase === 'towing-car2') {
+      var adac = null;
+      for (var i = 0; i < gameState.vehicles.length; i++) {
+        if (gameState.vehicles[i].canTow) { adac = gameState.vehicles[i]; break; }
+      }
+      if (adac) {
+        updateTowedCrashCarPosition(adac, dt);
+      }
+    }
 
     // Check if crash is fully resolved — start despawn timer
     if (crashState.adacPhase === 'done' && crashState.ambulanceDeparted) {
