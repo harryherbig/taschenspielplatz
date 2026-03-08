@@ -251,9 +251,13 @@ html, body {
   position: absolute;
   top: 12px; right: 12px;
 }
-#btn-fire {
+#btn-crash {
   position: absolute;
   top: 12px; right: 72px;
+}
+#btn-fire {
+  position: absolute;
+  top: 12px; right: 132px;
 }
 
 @supports (padding-top: env(safe-area-inset-top)) {
@@ -261,6 +265,8 @@ html, body {
   #app-title-small { top: calc(8px + env(safe-area-inset-top)); }
   #btn-back { top: calc(12px + env(safe-area-inset-top)); left: calc(12px + env(safe-area-inset-left)); }
   #btn-daynight { top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right)); }
+  #btn-crash { top: calc(12px + env(safe-area-inset-top)); right: calc(72px + env(safe-area-inset-right)); }
+  #btn-fire { top: calc(12px + env(safe-area-inset-top)); right: calc(132px + env(safe-area-inset-right)); }
 }
 </style>
 </head>
@@ -282,6 +288,10 @@ html, body {
         <span class="setting-label">&#x1F525; Automatische Brände</span>
         <span class="setting-switch"><span class="setting-knob"></span></span>
       </div>
+      <div class="setting-toggle" id="toggle-autocrashes">
+        <span class="setting-label">&#x1F4A5; Automatische Unfälle</span>
+        <span class="setting-switch"><span class="setting-knob"></span></span>
+      </div>
     </div>
   </div>
   <div id="start-divider"></div>
@@ -297,6 +307,7 @@ html, body {
     <div id="app-title-small">Taschenspielplatz</div>
     <button class="ui-btn" id="btn-back" aria-label="Zurück">&#x2190;</button>
     <button class="ui-btn" id="btn-fire" aria-label="Feuer">&#x1F525;</button>
+    <button class="ui-btn" id="btn-crash" aria-label="Unfall">&#x1F4A5;</button>
     <button class="ui-btn" id="btn-daynight" aria-label="Tag/Nacht">&#x2600;</button>
   </div>
 </div>
@@ -335,7 +346,6 @@ const ASSET_PACKS = [
     worldImage: 'assets/packs/city/world.png',
     unlocked: true,
     vehicles: [
-      { id: 'v-auto',           sprite: 'vehicle_normal',       sizeMul: 1.0, speedF: 0.202, startFX: 0.40, startFY: 0.40, glow: [255, 160, 30] },
       { id: 'v-feuerwehr',      sprite: 'vehicle_fire_truck',   sizeMul: 1.7, speedF: 0.158, startFX: 0.55, startFY: 0.42, glow: [60, 120, 255], canSpray: true },
       { id: 'v-feuerwehr-car',  sprite: 'vehicle_fire_car',     sizeMul: 1.2, speedF: 0.188, startFX: 0.48, startFY: 0.48, glow: [60, 120, 255], canSpray: true },
       { id: 'v-feuerwehr-med',  sprite: 'vehicle_fire_medium',  sizeMul: 1.4, speedF: 0.172, startFX: 0.52, startFY: 0.38, glow: [60, 120, 255], canSpray: true },
@@ -499,6 +509,7 @@ var gameState = {
   panX: 0, panY: 0, scale: 1,
   isNight: false,
   autoFires: true,
+  autoCrashes: true,
   activeVehicleId: null,
   cameraFollowing: false,
   pulseTime: 0,
@@ -526,6 +537,49 @@ var fireState = {
 };
 
 // ============================================================
+// CRASH SYSTEM — state and constants
+// ============================================================
+
+var CRASH_COOLDOWN_MIN = 30;
+var CRASH_COOLDOWN_MAX = 60;
+var CRASH_INITIAL_DELAY = 15;
+var CRASH_CAR_SIZE_MUL = 1.5;   // size multiplier for crashed car sprites
+
+// Road locations where crashes can spawn (fractional world coords)
+var CRASH_LOCATIONS = [
+  { fx: 0.42, fy: 0.30 },
+  { fx: 0.30, fy: 0.48 },
+  { fx: 0.55, fy: 0.45 },
+  { fx: 0.65, fy: 0.35 },
+  { fx: 0.45, fy: 0.15 },
+  { fx: 0.20, fy: 0.35 },
+];
+
+// Parking space where ADAC delivers crashed cars (below red school/church building)
+var PARKING_SPACE = { fx: 0.275, fy: 0.703 };
+
+var crashState = {
+  active: false,
+  cars: [
+    { x: 0, y: 0, angle: 0, sprite: 'vehicle_crashed', towed: false, towedToParking: false },
+    { x: 0, y: 0, angle: 0, sprite: 'vehicle_crashed_2', towed: false, towedToParking: false },
+  ],
+  centerX: 0,           // crash scene center (for ambulance target)
+  centerY: 0,
+  cooldownTimer: CRASH_INITIAL_DELAY,
+  elapsedTime: 0,       // total time since crash started
+  // Ambulance
+  ambulanceArrived: false,
+  ambulanceTimer: 0,     // counts up once arrived; departs at 120s
+  ambulanceDeparted: false,
+  // ADAC
+  adacStartTimer: 60,    // ADAC arrives 1 min after crash
+  adacPhase: 'waiting',  // 'waiting' | 'driving-to-crash' | 'attaching1' | 'towing-car1' | 'returning' | 'attaching2' | 'towing-car2' | 'done'
+  adacTargetCar: 0,      // 0 or 1
+  despawnTimer: -1,      // counts down after both cars parked; despawns at 0
+};
+
+// ============================================================
 // ASSETS
 // ============================================================
 
@@ -543,6 +597,10 @@ function loadPackSprites(pack) {
     var name = pack.vehicles[i].sprite;
     if (spriteNames.indexOf(name) === -1) spriteNames.push(name);
   }
+
+  // Crash scene sprites (not tied to a vehicle definition)
+  if (spriteNames.indexOf('vehicle_crashed') === -1) spriteNames.push('vehicle_crashed');
+  if (spriteNames.indexOf('vehicle_crashed_2') === -1) spriteNames.push('vehicle_crashed_2');
 
   packSprites = {};
 
@@ -1052,6 +1110,9 @@ function render() {
   // Fire overlay on buildings (below vehicles)
   drawFire();
 
+  // Crashed cars (below vehicles, above fire)
+  drawCrashedCars();
+
   // Tire tracks (between world and vehicles)
   pruneTireTracks(gameState.pulseTime);
   drawTireTracks(gameState.pulseTime);
@@ -1308,6 +1369,48 @@ function drawFire() {
   ctx.restore();
 }
 
+function drawCrashedCars() {
+  if (!crashState.active && !crashState.cars[0].towedToParking && !crashState.cars[1].towedToParking) return;
+  var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
+  var carS = worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL * scale;
+
+  for (var c = 0; c < crashState.cars.length; c++) {
+    var car = crashState.cars[c];
+    // Skip cars that have been fully cleaned up (crash resolved and not parked)
+    if (!crashState.active && !car.towedToParking) continue;
+
+    var sprite = packSprites[car.sprite];
+    if (!sprite) continue;
+
+    var sx = car.x * scale + panX;
+    var sy = car.y * scale + panY;
+    var rotRad = (car.angle + 90) * Math.PI / 180;
+
+    // Shadow
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(rotRad);
+    var shadowR = carS * 0.75;
+    var grad = ctx.createRadialGradient(0, 0, shadowR * 0.15, 0, 0, shadowR);
+    grad.addColorStop(0, 'rgba(0, 0, 0, 0.45)');
+    grad.addColorStop(0.5, 'rgba(0, 0, 0, 0.2)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, shadowR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Sprite
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(rotRad);
+    ctx.drawImage(sprite, -carS / 2, -carS / 2, carS, carS);
+    ctx.restore();
+  }
+
+}
+
 function updateFireResponse(v, dt) {
   var b = buildings[fireState.buildingIndex];
   var bCenterX = b.x + b.w / 2;
@@ -1445,6 +1548,250 @@ function updateFireSystem(dt) {
     fireState.cooldownTimer -= dt;
     if (fireState.cooldownTimer <= 0) {
       startFire();
+    }
+  }
+}
+
+// ============================================================
+// CRASH SYSTEM — functions
+// ============================================================
+
+function startCrash() {
+  var loc = CRASH_LOCATIONS[Math.floor(Math.random() * CRASH_LOCATIONS.length)];
+  var cx = loc.fx * worldW;
+  var cy = loc.fy * worldH;
+  var baseSize = worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL;
+
+  // Position two cars to look like a collision
+  var impactAngle = Math.random() * 360;  // random collision direction
+  var offset = baseSize * 0.6;
+
+  // Car 1: slightly offset, angled into impact
+  crashState.cars[0].x = cx - Math.cos(impactAngle * Math.PI / 180) * offset * 0.5;
+  crashState.cars[0].y = cy - Math.sin(impactAngle * Math.PI / 180) * offset * 0.5;
+  crashState.cars[0].angle = impactAngle + 15 + Math.random() * 20;
+  crashState.cars[0].sprite = 'vehicle_crashed';
+  crashState.cars[0].towed = false;
+  crashState.cars[0].towedToParking = false;
+
+  // Car 2: opposite side, angled toward car 1
+  crashState.cars[1].x = cx + Math.cos(impactAngle * Math.PI / 180) * offset * 0.5;
+  crashState.cars[1].y = cy + Math.sin(impactAngle * Math.PI / 180) * offset * 0.5;
+  crashState.cars[1].angle = impactAngle + 170 + Math.random() * 20;
+  crashState.cars[1].sprite = 'vehicle_crashed_2';
+  crashState.cars[1].towed = false;
+  crashState.cars[1].towedToParking = false;
+
+  crashState.centerX = cx;
+  crashState.centerY = cy;
+  crashState.active = true;
+  crashState.elapsedTime = 0;
+  crashState.ambulanceArrived = false;
+  crashState.ambulanceTimer = 0;
+  crashState.ambulanceDeparted = false;
+  crashState.adacStartTimer = 60;
+  crashState.adacPhase = 'waiting';
+  crashState.adacTargetCar = 0;
+  crashState.smokeParticles = [];
+}
+
+function updateCrashAmbulanceResponse(v, dt) {
+  var cs = getCarSize(v.sizeMul);
+  var crashCarSize = worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL;
+  var standoff = crashCarSize + cs.h;  // park well away from crash
+  var targetX = crashState.centerX;
+  var targetY = crashState.centerY - standoff;
+  var dx = targetX - v.x;
+  var dy = targetY - v.y;
+  var dist = Math.sqrt(dx * dx + dy * dy);
+  var arriveThreshold = cs.h * 1.5;
+
+  if (crashState.ambulanceArrived) {
+    // Parked at scene — brake and wait
+    v.vx *= Math.max(0, 1 - 6 * dt);
+    v.vy *= Math.max(0, 1 - 6 * dt);
+    v.x += v.vx * dt;
+    v.y += v.vy * dt;
+
+    crashState.ambulanceTimer += dt;
+    if (crashState.ambulanceTimer >= 120) {
+      crashState.ambulanceDeparted = true;
+    }
+    return;
+  }
+
+  if (dist < arriveThreshold) {
+    // Arrived
+    crashState.ambulanceArrived = true;
+    crashState.ambulanceTimer = 0;
+    v.vx *= 0.1;
+    v.vy *= 0.1;
+    return;
+  }
+
+  // Drive toward crash — same steering as fire response
+  var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+  var angleDiff = ((targetAngle - v.angle + 540) % 360) - 180;
+  var maxTurn = AI_TURN_RATE * dt;
+  if (angleDiff > maxTurn) angleDiff = maxTurn;
+  else if (angleDiff < -maxTurn) angleDiff = -maxTurn;
+  v.angle += angleDiff;
+  v.angle = ((v.angle % 360) + 360) % 360;
+
+  var speed = v.maxSpeed * AI_SPEED_FACTOR * 2.5;
+  var headRad = v.angle * Math.PI / 180;
+  v.vx = Math.cos(headRad) * speed;
+  v.vy = Math.sin(headRad) * speed;
+  v.x += v.vx * dt;
+  v.y += v.vy * dt;
+  sampleTireTrack(v, gameState.pulseTime);
+
+  // Bounds clamping
+  var halfW = cs.w * 0.4, halfH = cs.h * 0.4;
+  if (v.x < halfW)          { v.x = halfW;          v.vx = 0; }
+  if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; }
+  if (v.y < halfH)          { v.y = halfH;          v.vy = 0; }
+  if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; }
+}
+
+function updateCrashAdacResponse(v, dt) {
+  var cs = getCarSize(v.sizeMul);
+  var phase = crashState.adacPhase;
+  var carIdx = crashState.adacTargetCar;
+  var car = crashState.cars[carIdx];
+  var arriveThreshold = cs.h * 1.2;
+
+  // Helper: steer ADAC toward a target position
+  function steerToward(tx, ty) {
+    var dx = tx - v.x;
+    var dy = ty - v.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+
+    var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    var angleDiff = ((targetAngle - v.angle + 540) % 360) - 180;
+    var maxTurn = AI_TURN_RATE * dt;
+    if (angleDiff > maxTurn) angleDiff = maxTurn;
+    else if (angleDiff < -maxTurn) angleDiff = -maxTurn;
+    v.angle += angleDiff;
+    v.angle = ((v.angle % 360) + 360) % 360;
+
+    var speed = v.maxSpeed * AI_SPEED_FACTOR * 2.0;
+    var headRad = v.angle * Math.PI / 180;
+    v.vx = Math.cos(headRad) * speed;
+    v.vy = Math.sin(headRad) * speed;
+    v.x += v.vx * dt;
+    v.y += v.vy * dt;
+    sampleTireTrack(v, gameState.pulseTime);
+
+    // Bounds
+    var halfW2 = cs.w * 0.4, halfH2 = cs.h * 0.4;
+    if (v.x < halfW2)          { v.x = halfW2;          v.vx = 0; }
+    if (v.x > worldW - halfW2) { v.x = worldW - halfW2; v.vx = 0; }
+    if (v.y < halfH2)          { v.y = halfH2;          v.vy = 0; }
+    if (v.y > worldH - halfH2) { v.y = worldH - halfH2; v.vy = 0; }
+
+    return dist;
+  }
+
+  if (phase === 'driving-to-crash') {
+    var dist = steerToward(car.x, car.y);
+    if (dist < arriveThreshold) {
+      crashState.adacPhase = carIdx === 0 ? 'attaching1' : 'attaching2';
+      car.towed = true;
+    }
+  } else if (phase === 'attaching1' || phase === 'attaching2') {
+    // Brief pause then start towing
+    crashState.adacPhase = carIdx === 0 ? 'towing-car1' : 'towing-car2';
+  } else if (phase === 'towing-car1' || phase === 'towing-car2') {
+    // Drive to parking space, dragging the crashed car behind
+    // Offset car 2 perpendicular to the 45° parking angle
+    var parkOffset = carIdx === 1 ? worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL * 1.2 : 0;
+    var parkX = PARKING_SPACE.fx * worldW + parkOffset * Math.cos(45 * Math.PI / 180);
+    var parkY = PARKING_SPACE.fy * worldH + parkOffset * Math.sin(45 * Math.PI / 180);
+    var dist = steerToward(parkX, parkY);
+
+    // Update crashed car position: follow behind ADAC (rope physics)
+    var towHeadRad = v.angle * Math.PI / 180;
+    var anchorX = v.x - Math.cos(towHeadRad) * cs.h * 0.5;
+    var anchorY = v.y - Math.sin(towHeadRad) * cs.h * 0.5;
+    var crashCarSize = worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL;
+    var ropeLen = crashCarSize * 0.3;
+    var fullLen = crashCarSize * 0.5 + ropeLen;
+
+    // Gradually turn crashed car toward anchor
+    var dxA = anchorX - car.x;
+    var dyA = anchorY - car.y;
+    var distA = Math.sqrt(dxA * dxA + dyA * dyA);
+    if (distA > 1) {
+      var towAngle = Math.atan2(dyA, dxA) * 180 / Math.PI;
+      var aDiff = ((towAngle - car.angle + 540) % 360) - 180;
+      var maxT = 120 * dt;
+      if (aDiff > maxT) aDiff = maxT;
+      else if (aDiff < -maxT) aDiff = -maxT;
+      car.angle += aDiff;
+      car.angle = ((car.angle % 360) + 360) % 360;
+    }
+    var carHeadRad = car.angle * Math.PI / 180;
+    car.x = anchorX - Math.cos(carHeadRad) * fullLen;
+    car.y = anchorY - Math.sin(carHeadRad) * fullLen;
+
+    if (dist < arriveThreshold) {
+      // Arrived at parking — drop the car
+      car.towed = false;
+      car.towedToParking = true;
+      car.x = parkX;
+      car.y = parkY;
+      car.angle = 45;  // park at 45° to align with parking spaces
+
+      if (carIdx === 0) {
+        // Go back for car 2
+        crashState.adacTargetCar = 1;
+        crashState.adacPhase = 'returning';
+      } else {
+        crashState.adacPhase = 'done';
+      }
+    }
+  } else if (phase === 'returning') {
+    var car2 = crashState.cars[1];
+    var dist = steerToward(car2.x, car2.y);
+    if (dist < arriveThreshold) {
+      crashState.adacPhase = 'attaching2';
+      car2.towed = true;
+    }
+  }
+}
+
+function updateCrashSystem(dt) {
+  if (crashState.active) {
+    crashState.elapsedTime += dt;
+
+    // ADAC timer: starts driving after 60 seconds
+    if (crashState.adacPhase === 'waiting') {
+      crashState.adacStartTimer -= dt;
+      if (crashState.adacStartTimer <= 0) {
+        crashState.adacPhase = 'driving-to-crash';
+        crashState.adacTargetCar = 0;
+      }
+    }
+
+    // Check if crash is fully resolved — start despawn timer
+    if (crashState.adacPhase === 'done' && crashState.ambulanceDeparted) {
+      crashState.active = false;
+      crashState.despawnTimer = 60;  // parked cars stay visible for 1 minute
+    }
+  } else if (crashState.despawnTimer > 0) {
+    // Parked cars waiting to despawn
+    crashState.despawnTimer -= dt;
+    if (crashState.despawnTimer <= 0) {
+      crashState.despawnTimer = -1;
+      crashState.cars[0].towedToParking = false;
+      crashState.cars[1].towedToParking = false;
+      crashState.cooldownTimer = CRASH_COOLDOWN_MIN + Math.random() * (CRASH_COOLDOWN_MAX - CRASH_COOLDOWN_MIN);
+    }
+  } else if (gameState.autoCrashes) {
+    crashState.cooldownTimer -= dt;
+    if (crashState.cooldownTimer <= 0) {
+      startCrash();
     }
   }
 }
@@ -1597,7 +1944,12 @@ function updateVehicles(dt) {
         v.vy *= Math.max(0, 1 - 8 * dt);
         continue;
       }
-      if (fireState.active && v.canSpray) {
+      // Crash response: ambulance and ADAC have priority over normal roaming
+      if (crashState.active && v.id === 'v-krankenwagen' && !crashState.ambulanceDeparted) {
+        updateCrashAmbulanceResponse(v, dt);
+      } else if (crashState.active && v.canTow && crashState.adacPhase !== 'waiting' && crashState.adacPhase !== 'done') {
+        updateCrashAdacResponse(v, dt);
+      } else if (fireState.active && v.canSpray) {
         updateFireResponse(v, dt);
       } else {
         if (v.spraying && !fireState.active) v.spraying = false;
@@ -1689,6 +2041,7 @@ function updateVehicles(dt) {
 
   // --- COLLISION SEPARATION ---
   separateVehicles();
+  separateVehiclesFromCrash();
 
   // --- TOWING ---
   updateTowing(dt);
@@ -1746,6 +2099,40 @@ function separateVehicles() {
         b.x += nx * overlap * bWeight;
         b.y += ny * overlap * bWeight;
       }
+    }
+  }
+}
+
+function separateVehiclesFromCrash() {
+  if (!crashState.active && !crashState.cars[0].towedToParking && !crashState.cars[1].towedToParking) return;
+  var vehicles = gameState.vehicles;
+  var crashCarR = worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL * 0.45;
+
+  for (var c = 0; c < crashState.cars.length; c++) {
+    var car = crashState.cars[c];
+    if (car.towed) continue;  // being towed by ADAC, skip
+    if (!crashState.active && !car.towedToParking) continue;
+
+    for (var i = 0; i < vehicles.length; i++) {
+      var v = vehicles[i];
+      // Skip ADAC when it's actively towing this crash car
+      if (v.canTow && car.towed) continue;
+
+      var csV = getCarSize(v.sizeMul);
+      var rV = Math.max(csV.w, csV.h) * 0.45;
+      var dx = v.x - car.x;
+      var dy = v.y - car.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      var minDist = rV + crashCarR;
+
+      if (dist >= minDist || dist < 0.001) continue;
+
+      // Push vehicle away (crash car is immovable)
+      var overlap = minDist - dist;
+      var nx = dx / dist;
+      var ny = dy / dist;
+      v.x += nx * overlap;
+      v.y += ny * overlap;
     }
   }
 }
@@ -2173,6 +2560,13 @@ function setupUI() {
       startFire();
     }
   });
+
+  document.getElementById('btn-crash').addEventListener('click', function(e) {
+    e.stopPropagation();
+    if (!crashState.active) {
+      startCrash();
+    }
+  });
 }
 
 function applyNightMode() {
@@ -2244,6 +2638,16 @@ function buildStartScreen() {
     toggle.classList.toggle('active');
     saveAutoFiresSetting();
   });
+
+  // Auto-crashes toggle
+  var crashToggle = document.getElementById('toggle-autocrashes');
+  if (gameState.autoCrashes) crashToggle.classList.add('active');
+  else crashToggle.classList.remove('active');
+  crashToggle.addEventListener('click', function() {
+    gameState.autoCrashes = !gameState.autoCrashes;
+    crashToggle.classList.toggle('active');
+    saveAutoCrashesSetting();
+  });
 }
 
 function startPack(pack) {
@@ -2271,6 +2675,22 @@ function startPack(pack) {
     fireState.sprayAccumulator = 0;
     fireState.cooldownTimer = FIRE_INITIAL_DELAY;
     fireState.particles = [];
+
+    // Reset crash system
+    crashState.active = false;
+    crashState.cooldownTimer = CRASH_INITIAL_DELAY;
+    crashState.elapsedTime = 0;
+    crashState.ambulanceArrived = false;
+    crashState.ambulanceTimer = 0;
+    crashState.ambulanceDeparted = false;
+    crashState.adacStartTimer = 60;
+    crashState.adacPhase = 'waiting';
+    crashState.adacTargetCar = 0;
+    crashState.despawnTimer = -1;
+    crashState.cars[0].towed = false;
+    crashState.cars[0].towedToParking = false;
+    crashState.cars[1].towed = false;
+    crashState.cars[1].towedToParking = false;
 
     var loaded = loadPackState(pack);
 
@@ -2303,6 +2723,7 @@ function gameLoop(timestamp) {
     updateVehicles(dt);
     updateSprayParticles(dt);
     updateFireSystem(dt);
+    updateCrashSystem(dt);
     updateTowButton();
     cameraFollowActive(dt);
     render();
@@ -2328,10 +2749,24 @@ function saveAutoFiresSetting() {
   } catch(e) {}
 }
 
+function loadAutoCrashesSetting() {
+  try {
+    var val = localStorage.getItem('taschenspielplatz_autoCrashes');
+    if (val != null) gameState.autoCrashes = val === 'true';
+  } catch(e) {}
+}
+
+function saveAutoCrashesSetting() {
+  try {
+    localStorage.setItem('taschenspielplatz_autoCrashes', gameState.autoCrashes ? 'true' : 'false');
+  } catch(e) {}
+}
+
 function init() {
   migrateV5Storage();
   migrateV6Storage();
   loadAutoFiresSetting();
+  loadAutoCrashesSetting();
   buildStartScreen();
   setupInput();
   setupUI();
