@@ -86,6 +86,47 @@ html, body {
   font-weight: 600;
 }
 
+#start-settings {
+  width: 100%;
+  margin-top: 16px;
+}
+.setting-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.setting-label {
+  font-size: 13px;
+  color: rgba(255,255,255,0.7);
+  font-weight: 500;
+}
+.setting-switch {
+  width: 40px; height: 22px;
+  border-radius: 11px;
+  background: rgba(255,255,255,0.15);
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.setting-toggle.active .setting-switch {
+  background: rgba(255,140,40,0.6);
+}
+.setting-knob {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 9px;
+  background: rgba(255,255,255,0.7);
+  transition: left 0.2s;
+}
+.setting-toggle.active .setting-knob {
+  left: 20px;
+}
+
 #start-divider {
   width: 60px; height: 2px;
   background: rgba(255,255,255,0.15);
@@ -210,6 +251,10 @@ html, body {
   position: absolute;
   top: 12px; right: 12px;
 }
+#btn-fire {
+  position: absolute;
+  top: 12px; right: 72px;
+}
 
 @supports (padding-top: env(safe-area-inset-top)) {
   #start-screen { padding-top: calc(40px + env(safe-area-inset-top)); padding-bottom: calc(40px + env(safe-area-inset-bottom)); }
@@ -232,6 +277,12 @@ html, body {
       <div class="philosophy-item"><span class="philosophy-label">Kein Ton.</span> Perfekt für Auto, Restaurant und Wartezimmer. Die Motorengeräusche macht dein Kind selbst.</div>
       <div class="philosophy-item"><span class="philosophy-label">Freies Spiel.</span> Tippe auf ein Fahrzeug, ziehe es mit dem Finger durch die Stadt. Das war's.</div>
     </div>
+    <div id="start-settings">
+      <div class="setting-toggle" id="toggle-autofires">
+        <span class="setting-label">&#x1F525; Automatische Brände</span>
+        <span class="setting-switch"><span class="setting-knob"></span></span>
+      </div>
+    </div>
   </div>
   <div id="start-divider"></div>
   <div id="start-choose">Wähle eine Welt:</div>
@@ -245,6 +296,7 @@ html, body {
   <div id="game-ui">
     <div id="app-title-small">Taschenspielplatz</div>
     <button class="ui-btn" id="btn-back" aria-label="Zurück">&#x2190;</button>
+    <button class="ui-btn" id="btn-fire" aria-label="Feuer">&#x1F525;</button>
     <button class="ui-btn" id="btn-daynight" aria-label="Tag/Nacht">&#x2600;</button>
   </div>
 </div>
@@ -446,6 +498,7 @@ var currentScreen = 'start';
 var gameState = {
   panX: 0, panY: 0, scale: 1,
   isNight: false,
+  autoFires: true,
   activeVehicleId: null,
   cameraFollowing: false,
   pulseTime: 0,
@@ -1388,7 +1441,7 @@ function updateFireSystem(dt) {
   if (fireState.active) {
     updateFireParticles(dt);
     updateFireExtinguishing(dt);
-  } else {
+  } else if (gameState.autoFires) {
     fireState.cooldownTimer -= dt;
     if (fireState.cooldownTimer <= 0) {
       startFire();
@@ -2113,6 +2166,13 @@ function setupUI() {
     applyNightMode();
     savePackState(currentPack);
   });
+
+  document.getElementById('btn-fire').addEventListener('click', function(e) {
+    e.stopPropagation();
+    if (!fireState.active && buildings.length > 0) {
+      startFire();
+    }
+  });
 }
 
 function applyNightMode() {
@@ -2174,6 +2234,16 @@ function buildStartScreen() {
       list.appendChild(card);
     })(ASSET_PACKS[i]);
   }
+
+  // Auto-fires toggle
+  var toggle = document.getElementById('toggle-autofires');
+  if (gameState.autoFires) toggle.classList.add('active');
+  else toggle.classList.remove('active');
+  toggle.addEventListener('click', function() {
+    gameState.autoFires = !gameState.autoFires;
+    toggle.classList.toggle('active');
+    saveAutoFiresSetting();
+  });
 }
 
 function startPack(pack) {
@@ -2245,9 +2315,23 @@ function gameLoop(timestamp) {
 // INIT
 // ============================================================
 
+function loadAutoFiresSetting() {
+  try {
+    var val = localStorage.getItem('taschenspielplatz_autoFires');
+    if (val != null) gameState.autoFires = val === 'true';
+  } catch(e) {}
+}
+
+function saveAutoFiresSetting() {
+  try {
+    localStorage.setItem('taschenspielplatz_autoFires', gameState.autoFires ? 'true' : 'false');
+  } catch(e) {}
+}
+
 function init() {
   migrateV5Storage();
   migrateV6Storage();
+  loadAutoFiresSetting();
   buildStartScreen();
   setupInput();
   setupUI();
