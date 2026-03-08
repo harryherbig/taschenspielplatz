@@ -574,7 +574,7 @@ var crashState = {
   ambulanceDeparted: false,
   // ADAC
   adacStartTimer: 60,    // ADAC arrives 1 min after crash
-  adacPhase: 'waiting',  // 'waiting' | 'driving-to-crash' | 'attaching1' | 'towing-car1' | 'returning' | 'attaching2' | 'towing-car2' | 'done'
+  adacPhase: 'driving-to-scene',  // 'driving-to-scene' | 'waiting-at-scene' | 'positioning' | 'reversing' | 'attaching1' | 'towing-car1' | 'returning' | 'positioning2' | 'reversing2' | 'attaching2' | 'towing-car2' | 'done'
   adacTargetCar: 0,      // 0 or 1
   despawnTimer: -1,      // counts down after both cars parked; despawns at 0
 };
@@ -1589,8 +1589,8 @@ function startCrash() {
   crashState.ambulanceArrived = false;
   crashState.ambulanceTimer = 0;
   crashState.ambulanceDeparted = false;
-  crashState.adacStartTimer = 60;
-  crashState.adacPhase = 'waiting';
+  crashState.adacStartTimer = 0;
+  crashState.adacPhase = 'driving-to-scene';
   crashState.adacTargetCar = 0;
   crashState.smokeParticles = [];
 }
@@ -1660,9 +1660,10 @@ function updateCrashAdacResponse(v, dt) {
   var carIdx = crashState.adacTargetCar;
   var car = crashState.cars[carIdx];
   var arriveThreshold = cs.h * 1.2;
+  var crashCarSize = worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL;
 
-  // Helper: steer ADAC toward a target position
-  function steerToward(tx, ty) {
+  // Helper: steer ADAC toward a target position (forward driving)
+  function steerToward(tx, ty, speedMul) {
     var dx = tx - v.x;
     var dy = ty - v.y;
     var dist = Math.sqrt(dx * dx + dy * dy);
@@ -1675,7 +1676,7 @@ function updateCrashAdacResponse(v, dt) {
     v.angle += angleDiff;
     v.angle = ((v.angle % 360) + 360) % 360;
 
-    var speed = v.maxSpeed * AI_SPEED_FACTOR * 2.0;
+    var speed = v.maxSpeed * AI_SPEED_FACTOR * (speedMul || 2.0);
     var headRad = v.angle * Math.PI / 180;
     v.vx = Math.cos(headRad) * speed;
     v.vy = Math.sin(headRad) * speed;
@@ -1693,19 +1694,110 @@ function updateCrashAdacResponse(v, dt) {
     return dist;
   }
 
-  if (phase === 'driving-to-crash') {
-    var dist = steerToward(car.x, car.y);
+  // Helper: reverse ADAC toward a target (rear-first approach)
+  function reverseToward(tx, ty) {
+    var dx = tx - v.x;
+    var dy = ty - v.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+
+    // We want the rear of ADAC to point toward target
+    // So heading should point AWAY from target
+    var rearAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    var desiredHeading = ((rearAngle + 180) % 360 + 360) % 360;
+    var angleDiff = ((desiredHeading - v.angle + 540) % 360) - 180;
+    var maxTurn = AI_TURN_RATE * 0.7 * dt;  // slower turning while reversing
+    if (angleDiff > maxTurn) angleDiff = maxTurn;
+    else if (angleDiff < -maxTurn) angleDiff = -maxTurn;
+    v.angle += angleDiff;
+    v.angle = ((v.angle % 360) + 360) % 360;
+
+    // Move backward at slow speed
+    var speed = v.maxSpeed * AI_SPEED_FACTOR * 0.6;
+    var headRad = v.angle * Math.PI / 180;
+    v.vx = -Math.cos(headRad) * speed;
+    v.vy = -Math.sin(headRad) * speed;
+    v.x += v.vx * dt;
+    v.y += v.vy * dt;
+    sampleTireTrack(v, gameState.pulseTime);
+
+    // Bounds
+    var halfW2 = cs.w * 0.4, halfH2 = cs.h * 0.4;
+    if (v.x < halfW2)          { v.x = halfW2;          v.vx = 0; }
+    if (v.x > worldW - halfW2) { v.x = worldW - halfW2; v.vx = 0; }
+    if (v.y < halfH2)          { v.y = halfH2;          v.vy = 0; }
+    if (v.y > worldH - halfH2) { v.y = worldH - halfH2; v.vy = 0; }
+
+    return dist;
+  }
+
+  // Helper: get the nose position of a crashed car
+  function getCarNose(c) {
+    var rad = c.angle * Math.PI / 180;
+    return {
+      x: c.x + Math.cos(rad) * crashCarSize * 0.5,
+      y: c.y + Math.sin(rad) * crashCarSize * 0.5
+    };
+  }
+
+  // Phase: Drive to crash scene but keep distance (standoff)
+  if (phase === 'driving-to-scene') {
+    var standoff = crashCarSize * 2 + cs.h;
+    var standoffX = crashState.centerX;
+    var standoffY = crashState.centerY + standoff;  // approach from below
+    var dist = steerToward(standoffX, standoffY);
     if (dist < arriveThreshold) {
+      crashState.adacPhase = 'waiting-at-scene';
+    }
+
+  // Phase: Parked at standoff, waiting for ambulance to depart
+  } else if (phase === 'waiting-at-scene') {
+    // Brake to a stop
+    v.vx *= Math.max(0, 1 - 6 * dt);
+    v.vy *= Math.max(0, 1 - 6 * dt);
+    v.x += v.vx * dt;
+    v.y += v.vy * dt;
+
+    // Only start towing once ambulance has left
+    if (crashState.ambulanceDeparted) {
+      crashState.adacPhase = 'positioning';
+      crashState.adacTargetCar = 0;
+    }
+
+  // Phase: Drive to a point ahead of the crashed car's nose to set up reverse approach
+  } else if (phase === 'positioning' || phase === 'positioning2') {
+    var nose = getCarNose(car);
+    var carRad = car.angle * Math.PI / 180;
+    // Target: a point 2x car lengths ahead of the car's nose
+    var approachDist = cs.h * 2.5;
+    var posX = nose.x + Math.cos(carRad) * approachDist;
+    var posY = nose.y + Math.sin(carRad) * approachDist;
+    var dist = steerToward(posX, posY);
+    if (dist < arriveThreshold * 1.5) {
+      crashState.adacPhase = phase === 'positioning' ? 'reversing' : 'reversing2';
+    }
+
+  // Phase: Reverse toward the crashed car's nose
+  } else if (phase === 'reversing' || phase === 'reversing2') {
+    var nose = getCarNose(car);
+    var dist = reverseToward(nose.x, nose.y);
+    // Rear of ADAC is at heading + 180°, so check distance from rear to nose
+    var headRad = v.angle * Math.PI / 180;
+    var rearX = v.x - Math.cos(headRad) * cs.h * 0.5;
+    var rearY = v.y - Math.sin(headRad) * cs.h * 0.5;
+    var rearDist = Math.sqrt((rearX - nose.x) * (rearX - nose.x) + (rearY - nose.y) * (rearY - nose.y));
+    if (rearDist < crashCarSize * 0.4) {
       crashState.adacPhase = carIdx === 0 ? 'attaching1' : 'attaching2';
       car.towed = true;
     }
+
   } else if (phase === 'attaching1' || phase === 'attaching2') {
     // Brief pause then start towing
     crashState.adacPhase = carIdx === 0 ? 'towing-car1' : 'towing-car2';
+
   } else if (phase === 'towing-car1' || phase === 'towing-car2') {
     // Drive to parking space, dragging the crashed car behind
     // Offset car 2 perpendicular to the 45° parking angle
-    var parkOffset = carIdx === 1 ? worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL * 1.2 : 0;
+    var parkOffset = carIdx === 1 ? crashCarSize * 1.2 : 0;
     var parkX = PARKING_SPACE.fx * worldW + parkOffset * Math.cos(45 * Math.PI / 180);
     var parkY = PARKING_SPACE.fy * worldH + parkOffset * Math.sin(45 * Math.PI / 180);
     var dist = steerToward(parkX, parkY);
@@ -1714,7 +1806,6 @@ function updateCrashAdacResponse(v, dt) {
     var towHeadRad = v.angle * Math.PI / 180;
     var anchorX = v.x - Math.cos(towHeadRad) * cs.h * 0.5;
     var anchorY = v.y - Math.sin(towHeadRad) * cs.h * 0.5;
-    var crashCarSize = worldW * CAR_SCALE_FACTOR * CRASH_CAR_SIZE_MUL;
     var ropeLen = crashCarSize * 0.3;
     var fullLen = crashCarSize * 0.5 + ropeLen;
 
@@ -1751,12 +1842,13 @@ function updateCrashAdacResponse(v, dt) {
         crashState.adacPhase = 'done';
       }
     }
+
   } else if (phase === 'returning') {
     var car2 = crashState.cars[1];
     var dist = steerToward(car2.x, car2.y);
-    if (dist < arriveThreshold) {
-      crashState.adacPhase = 'attaching2';
-      car2.towed = true;
+    // Don't drive right up to the car — switch to positioning for reverse approach
+    if (dist < cs.h * 4) {
+      crashState.adacPhase = 'positioning2';
     }
   }
 }
@@ -1765,14 +1857,7 @@ function updateCrashSystem(dt) {
   if (crashState.active) {
     crashState.elapsedTime += dt;
 
-    // ADAC timer: starts driving after 60 seconds
-    if (crashState.adacPhase === 'waiting') {
-      crashState.adacStartTimer -= dt;
-      if (crashState.adacStartTimer <= 0) {
-        crashState.adacPhase = 'driving-to-crash';
-        crashState.adacTargetCar = 0;
-      }
-    }
+    // ADAC now drives to scene immediately (phase set in startCrash)
 
     // Check if crash is fully resolved — start despawn timer
     if (crashState.adacPhase === 'done' && crashState.ambulanceDeparted) {
@@ -1947,7 +2032,7 @@ function updateVehicles(dt) {
       // Crash response: ambulance and ADAC have priority over normal roaming
       if (crashState.active && v.id === 'v-krankenwagen' && !crashState.ambulanceDeparted) {
         updateCrashAmbulanceResponse(v, dt);
-      } else if (crashState.active && v.canTow && crashState.adacPhase !== 'waiting' && crashState.adacPhase !== 'done') {
+      } else if (crashState.active && v.canTow && crashState.adacPhase !== 'done') {
         updateCrashAdacResponse(v, dt);
       } else if (fireState.active && v.canSpray) {
         updateFireResponse(v, dt);
@@ -2115,8 +2200,8 @@ function separateVehiclesFromCrash() {
 
     for (var i = 0; i < vehicles.length; i++) {
       var v = vehicles[i];
-      // Skip ADAC when it's actively towing this crash car
-      if (v.canTow && car.towed) continue;
+      // Skip ADAC when it's actively towing or approaching this crash car
+      if (v.canTow && (car.towed || crashState.adacPhase === 'reversing' || crashState.adacPhase === 'reversing2' || crashState.adacPhase === 'positioning' || crashState.adacPhase === 'positioning2')) continue;
 
       var csV = getCarSize(v.sizeMul);
       var rV = Math.max(csV.w, csV.h) * 0.45;
@@ -2683,8 +2768,8 @@ function startPack(pack) {
     crashState.ambulanceArrived = false;
     crashState.ambulanceTimer = 0;
     crashState.ambulanceDeparted = false;
-    crashState.adacStartTimer = 60;
-    crashState.adacPhase = 'waiting';
+    crashState.adacStartTimer = 0;
+    crashState.adacPhase = 'driving-to-scene';
     crashState.adacTargetCar = 0;
     crashState.despawnTimer = -1;
     crashState.cars[0].towed = false;
