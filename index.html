@@ -292,6 +292,19 @@ const ASSET_PACKS = [
       { id: 'v-adac',           sprite: 'vehicle_adac',         sizeMul: 1.2, speedF: 0.144, startFX: 0.35, startFY: 0.58, glow: [255, 160, 30], canTow: true },
       { id: 'v-amphibious',     sprite: 'vehivle_fire_amphibious', sizeMul: 1.3, speedF: 0.170, startFX: 0.60, startFY: 0.50, glow: [30, 200, 180], canSpray: true, amphibious: true },
     ],
+    // Building positions mapped to world.png (2048x2048)
+    buildings: [
+      { fx: 0.23, fy: 0.01, fw: 0.14, fh: 0.10 },   // Red hospital (top center-left)
+      { fx: 0.54, fy: 0.01, fw: 0.16, fh: 0.10 },   // White clinic (top center-right)
+      { fx: 0.22, fy: 0.19, fw: 0.13, fh: 0.10 },   // Beige house (row 2 left)
+      { fx: 0.48, fy: 0.18, fw: 0.13, fh: 0.09 },   // Gray house (row 2 center)
+      { fx: 0.08, fy: 0.32, fw: 0.17, fh: 0.14 },   // Red school + church (row 3 left)
+      { fx: 0.33, fy: 0.31, fw: 0.19, fh: 0.15 },   // Yellow house (row 3 center)
+      { fx: 0.74, fy: 0.30, fw: 0.14, fh: 0.12 },   // ABCLM store (right)
+      { fx: 0.73, fy: 0.47, fw: 0.14, fh: 0.10 },   // Scorre store (right lower)
+      { fx: 0.53, fy: 0.51, fw: 0.13, fh: 0.10 },   // Red school house (lower center)
+      { fx: 0.32, fy: 0.52, fw: 0.10, fh: 0.08 },   // BBQ/grill area (lower left)
+    ],
   },
   // Future packs:
   // { id: 'construction', name: 'Baustelle', worldImage: 'assets/packs/construction/world.png', unlocked: false, vehicles: [...] },
@@ -437,6 +450,26 @@ var gameState = {
   cameraFollowing: false,
   pulseTime: 0,
   vehicles: [],
+};
+
+// ============================================================
+// FIRE SYSTEM — state and constants
+// ============================================================
+
+var buildings = [];  // populated in startPack() from pack.buildings
+
+var FIRE_COOLDOWN_MIN = 20;
+var FIRE_COOLDOWN_MAX = 45;
+var FIRE_INITIAL_DELAY = 10;
+
+var fireState = {
+  active: false,
+  buildingIndex: -1,
+  intensity: 1.0,
+  sprayAccumulator: 0,
+  extinguishThreshold: 60,
+  cooldownTimer: FIRE_INITIAL_DELAY,
+  particles: [],
 };
 
 // ============================================================
@@ -873,6 +906,22 @@ function drawNightOverlay(activeV) {
     }
   }
 
+  // Fire glow punches through darkness
+  if (fireState.active) {
+    var fb = buildings[fireState.buildingIndex];
+    var fireSX = (fb.x + fb.w / 2) * scale + panX;
+    var fireSY = (fb.y + fb.h / 2) * scale + panY;
+    var fireR = Math.max(fb.w, fb.h) * scale * 1.2 * fireState.intensity;
+    var fireGrad = nightCtx.createRadialGradient(fireSX, fireSY, 0, fireSX, fireSY, fireR);
+    fireGrad.addColorStop(0, 'rgba(255,255,255,0.9)');
+    fireGrad.addColorStop(0.5, 'rgba(255,255,255,0.4)');
+    fireGrad.addColorStop(1, 'rgba(255,255,255,0)');
+    nightCtx.fillStyle = fireGrad;
+    nightCtx.beginPath();
+    nightCtx.arc(fireSX, fireSY, fireR, 0, Math.PI * 2);
+    nightCtx.fill();
+  }
+
   nightCtx.globalCompositeOperation = 'source-over';
 
   // Composite the darkness layer onto the main canvas
@@ -946,6 +995,9 @@ function render() {
     var imgH = worldH * scale;
     ctx.drawImage(worldImage, panX, panY, imgW, imgH);
   }
+
+  // Fire overlay on buildings (below vehicles)
+  drawFire();
 
   // Tire tracks (between world and vehicles)
   pruneTireTracks(gameState.pulseTime);
@@ -1132,6 +1184,219 @@ function drawWaterSpray() {
 }
 
 // ============================================================
+// FIRE SYSTEM — particles, rendering, AI response, extinguishing
+// ============================================================
+
+function updateFireParticles(dt) {
+  if (!fireState.active) { fireState.particles = []; return; }
+
+  var b = buildings[fireState.buildingIndex];
+  var spawnCount = Math.round(8 * fireState.intensity);
+  for (var i = 0; i < spawnCount; i++) {
+    fireState.particles.push({
+      x: b.x + Math.random() * b.w,
+      y: b.y + Math.random() * b.h * 0.7,
+      vy: -(40 + Math.random() * 60),
+      vx: (Math.random() - 0.5) * 20,
+      life: 0.5 + Math.random() * 0.8,
+      maxLife: 0.5 + Math.random() * 0.8,
+      size: 8 + Math.random() * 12,
+      hue: 20 + Math.random() * 30,
+    });
+  }
+
+  for (var j = fireState.particles.length - 1; j >= 0; j--) {
+    var p = fireState.particles[j];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy -= 15 * dt;
+    p.life -= dt;
+    if (p.life <= 0) fireState.particles.splice(j, 1);
+  }
+}
+
+function drawFire() {
+  if (!fireState.active || fireState.particles.length === 0) return;
+  var panX = gameState.panX, panY = gameState.panY, scale = gameState.scale;
+  var b = buildings[fireState.buildingIndex];
+
+  ctx.save();
+
+  // Glow overlay on building
+  var cx = (b.x + b.w / 2) * scale + panX;
+  var cy = (b.y + b.h / 2) * scale + panY;
+  var glowR = Math.max(b.w, b.h) * scale * 0.8;
+  var pulse = 0.3 + 0.15 * Math.sin(gameState.pulseTime * 5);
+  var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+  grad.addColorStop(0, 'rgba(255, 100, 0, ' + (pulse * fireState.intensity) + ')');
+  grad.addColorStop(0.5, 'rgba(255, 50, 0, ' + (pulse * 0.5 * fireState.intensity) + ')');
+  grad.addColorStop(1, 'rgba(255, 30, 0, 0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Fire particles
+  for (var i = 0; i < fireState.particles.length; i++) {
+    var p = fireState.particles[i];
+    var t = 1 - p.life / p.maxLife;
+    var alpha = (1 - t) * 0.8 * fireState.intensity;
+    var sx = p.x * scale + panX;
+    var sy = p.y * scale + panY;
+    var r = p.size * scale * (1 + t * 0.5);
+
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    var hue = p.hue - t * 15;
+    ctx.fillStyle = 'hsla(' + hue + ', 100%, ' + (55 - t * 20) + '%, ' + alpha + ')';
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function updateFireResponse(v, dt) {
+  var b = buildings[fireState.buildingIndex];
+  var bCenterX = b.x + b.w / 2;
+  var bCenterY = b.y + b.h / 2;
+  var cs = getCarSize(v.sizeMul);
+
+  // Each fire truck approaches from a different angle to spread out
+  var vi = gameState.vehicles.indexOf(v);
+  var sprayVehicles = gameState.vehicles.filter(function(vv) { return vv.canSpray; });
+  var sprayIdx = sprayVehicles.indexOf(v);
+  var approachAngle = (sprayIdx / sprayVehicles.length) * Math.PI * 2;
+  var standoff = Math.max(b.w, b.h) * 0.8 + cs.h * 0.5;
+  var targetX = bCenterX + Math.cos(approachAngle) * standoff;
+  var targetY = bCenterY + Math.sin(approachAngle) * standoff;
+
+  var dx = targetX - v.x;
+  var dy = targetY - v.y;
+  var dist = Math.sqrt(dx * dx + dy * dy);
+
+  var sprayThreshold = cs.h * 1.5;
+
+  if (dist < sprayThreshold) {
+    // Arrived: face building and spray
+    v.spraying = true;
+
+    var toBuildingAngle = Math.atan2(bCenterY - v.y, bCenterX - v.x) * 180 / Math.PI;
+    var angleDiff = ((toBuildingAngle - v.angle + 540) % 360) - 180;
+    var maxTurn = AI_TURN_RATE * 2 * dt;
+    if (angleDiff > maxTurn) angleDiff = maxTurn;
+    else if (angleDiff < -maxTurn) angleDiff = -maxTurn;
+    v.angle += angleDiff;
+    v.angle = ((v.angle % 360) + 360) % 360;
+
+    // Brake to stop
+    v.vx *= Math.max(0, 1 - 6 * dt);
+    v.vy *= Math.max(0, 1 - 6 * dt);
+    v.x += v.vx * dt;
+    v.y += v.vy * dt;
+  } else {
+    // Driving toward fire — faster than normal roaming
+    v.spraying = false;
+
+    var targetAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+    var angleDiff2 = ((targetAngle - v.angle + 540) % 360) - 180;
+    var maxTurn2 = AI_TURN_RATE * dt;
+    if (angleDiff2 > maxTurn2) angleDiff2 = maxTurn2;
+    else if (angleDiff2 < -maxTurn2) angleDiff2 = -maxTurn2;
+    v.angle += angleDiff2;
+    v.angle = ((v.angle % 360) + 360) % 360;
+
+    var speed = v.maxSpeed * AI_SPEED_FACTOR * 2.5;
+    if (v.amphibious && isInWater(v.x, v.y)) {
+      speed *= AMPHIBIOUS_WATER_SPEED;
+    }
+    var headRad = v.angle * Math.PI / 180;
+    v.vx = Math.cos(headRad) * speed;
+    v.vy = Math.sin(headRad) * speed;
+    v.x += v.vx * dt;
+    v.y += v.vy * dt;
+
+    sampleTireTrack(v, gameState.pulseTime);
+  }
+
+  // Bounds clamping
+  var halfW = cs.w * 0.4, halfH = cs.h * 0.4;
+  if (v.amphibious) {
+    var waterExt = worldW * WATER_MARGIN;
+    if (v.x < -waterExt + halfW)          { v.x = -waterExt + halfW;          v.vx = 0; }
+    if (v.x > worldW + waterExt - halfW)  { v.x = worldW + waterExt - halfW;  v.vx = 0; }
+    if (v.y < -waterExt + halfH)          { v.y = -waterExt + halfH;          v.vy = 0; }
+    if (v.y > worldH + waterExt - halfH)  { v.y = worldH + waterExt - halfH;  v.vy = 0; }
+  } else {
+    if (v.x < halfW)          { v.x = halfW;          v.vx = 0; }
+    if (v.x > worldW - halfW) { v.x = worldW - halfW; v.vx = 0; }
+    if (v.y < halfH)          { v.y = halfH;          v.vy = 0; }
+    if (v.y > worldH - halfH) { v.y = worldH - halfH; v.vy = 0; }
+  }
+}
+
+function updateFireExtinguishing(dt) {
+  if (!fireState.active) return;
+
+  var b = buildings[fireState.buildingIndex];
+  var hitCount = 0;
+
+  // Count spray particles hitting the building area (with some margin)
+  var margin = 30;
+  for (var i = 0; i < sprayParticles.length; i++) {
+    var sp = sprayParticles[i];
+    if (sp.x >= b.x - margin && sp.x <= b.x + b.w + margin &&
+        sp.y >= b.y - margin && sp.y <= b.y + b.h + margin) {
+      hitCount++;
+    }
+  }
+
+  // Each hit contributes to extinguishing
+  fireState.sprayAccumulator += hitCount * dt * 0.005;
+
+  // Update visual intensity
+  fireState.intensity = Math.max(0, 1 - fireState.sprayAccumulator / fireState.extinguishThreshold);
+
+  // Fire extinguished
+  if (fireState.sprayAccumulator >= fireState.extinguishThreshold) {
+    fireState.active = false;
+    fireState.intensity = 0;
+    fireState.particles = [];
+    fireState.cooldownTimer = FIRE_COOLDOWN_MIN + Math.random() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
+
+    // Stop all auto-spraying fire trucks
+    for (var j = 0; j < gameState.vehicles.length; j++) {
+      var v = gameState.vehicles[j];
+      if (v.canSpray && v.id !== gameState.activeVehicleId) {
+        v.spraying = false;
+      }
+    }
+  }
+}
+
+function startFire() {
+  if (buildings.length === 0) return;
+  fireState.buildingIndex = Math.floor(Math.random() * buildings.length);
+  fireState.active = true;
+  fireState.intensity = 1.0;
+  fireState.sprayAccumulator = 0;
+  fireState.particles = [];
+}
+
+function updateFireSystem(dt) {
+  if (buildings.length === 0) return;
+
+  if (fireState.active) {
+    updateFireParticles(dt);
+    updateFireExtinguishing(dt);
+  } else {
+    fireState.cooldownTimer -= dt;
+    if (fireState.cooldownTimer <= 0) {
+      startFire();
+    }
+  }
+}
+
+// ============================================================
 // VEHICLE MOVEMENT — SmoothDamp steering model
 // ============================================================
 
@@ -1279,7 +1544,12 @@ function updateVehicles(dt) {
         v.vy *= Math.max(0, 1 - 8 * dt);
         continue;
       }
-      updateAIRoaming(v, dt);
+      if (fireState.active && v.canSpray) {
+        updateFireResponse(v, dt);
+      } else {
+        if (v.spraying && !fireState.active) v.spraying = false;
+        updateAIRoaming(v, dt);
+      }
       continue;
     }
 
@@ -1915,6 +2185,23 @@ function startPack(pack) {
     loadPackSprites(pack),
   ]).then(function() {
     initVehicles(pack);
+
+    // Populate runtime building positions from pack data
+    buildings = (pack.buildings || []).map(function(b) {
+      return {
+        x: b.fx * worldW, y: b.fy * worldH,
+        w: b.fw * worldW, h: b.fh * worldH,
+      };
+    });
+
+    // Reset fire system
+    fireState.active = false;
+    fireState.buildingIndex = -1;
+    fireState.intensity = 1.0;
+    fireState.sprayAccumulator = 0;
+    fireState.cooldownTimer = FIRE_INITIAL_DELAY;
+    fireState.particles = [];
+
     var loaded = loadPackState(pack);
 
     if (!loaded) {
@@ -1945,6 +2232,7 @@ function gameLoop(timestamp) {
   if (currentScreen === 'game') {
     updateVehicles(dt);
     updateSprayParticles(dt);
+    updateFireSystem(dt);
     updateTowButton();
     cameraFollowActive(dt);
     render();
