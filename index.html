@@ -1930,7 +1930,7 @@ function updateCrashSystem(dt) {
     // Ambulance timer always ticks (even if player controls the ambulance)
     if (crashState.ambulanceArrived && !crashState.ambulanceDeparted) {
       crashState.ambulanceTimer += dt;
-      if (crashState.ambulanceTimer >= 120) {
+      if (crashState.ambulanceTimer >= 3) {
         crashState.ambulanceDeparted = true;
       }
     }
