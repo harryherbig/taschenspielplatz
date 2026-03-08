@@ -570,7 +570,7 @@ var crashState = {
   elapsedTime: 0,       // total time since crash started
   // Ambulance
   ambulanceArrived: false,
-  ambulanceTimer: 0,     // counts up once arrived; departs at 120s
+  ambulanceTimer: 0,     // counts up once arrived; departs at 3s
   ambulanceDeparted: false,
   // ADAC
   adacStartTimer: 60,    // ADAC arrives 1 min after crash
@@ -918,6 +918,55 @@ function drawVehicle(v, isActive) {
   ctx.rotate(rotRad);
   ctx.drawImage(sprite, -carW/2, -carH/2, carW, carH);
   ctx.restore();
+
+  // Warning lights for emergency vehicles during crash response
+  var showWarningLight = false;
+  var wlColor = null;
+  // Ambulance: blue warning lights when driving to scene or leaving scene
+  if (v.id === 'v-krankenwagen' && crashState.active && !crashState.ambulanceDeparted) {
+    // Driving to scene (not yet arrived)
+    if (!crashState.ambulanceArrived) {
+      showWarningLight = true;
+      wlColor = [60, 120, 255]; // blue
+    }
+  }
+  if (v.id === 'v-krankenwagen' && crashState.active && crashState.ambulanceDeparted) {
+    // Leaving scene — show blue lights briefly while driving away
+    showWarningLight = true;
+    wlColor = [60, 120, 255]; // blue
+  }
+  // Tow truck: orange warning lights when towing a vehicle
+  if (v.canTow && crashState.active && (
+    crashState.adacPhase === 'towing-car1' || crashState.adacPhase === 'towing-car2'
+  )) {
+    showWarningLight = true;
+    wlColor = [255, 160, 30]; // orange
+  }
+
+  if (showWarningLight && wlColor) {
+    var flashRate = 6; // flashes per second
+    var flash = Math.sin(gameState.pulseTime * flashRate * Math.PI * 2);
+    var flashAlpha = 0.4 + 0.6 * Math.max(0, flash);
+    var lightR = Math.max(carW, carH) * 0.2;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(rotRad);
+    // Two lights on the roof, left and right — alternating flash
+    for (var li = -1; li <= 1; li += 2) {
+      var lAlpha = li < 0 ? flashAlpha : (0.4 + 0.6 * Math.max(0, -flash));
+      var lx = li * carW * 0.2;
+      var ly = -carH * 0.3; // near the front/roof of vehicle
+      var lightGrad = ctx.createRadialGradient(lx, ly, 0, lx, ly, lightR);
+      lightGrad.addColorStop(0, 'rgba(' + wlColor[0] + ',' + wlColor[1] + ',' + wlColor[2] + ',' + lAlpha + ')');
+      lightGrad.addColorStop(0.5, 'rgba(' + wlColor[0] + ',' + wlColor[1] + ',' + wlColor[2] + ',' + (lAlpha * 0.4) + ')');
+      lightGrad.addColorStop(1, 'rgba(' + wlColor[0] + ',' + wlColor[1] + ',' + wlColor[2] + ',0)');
+      ctx.fillStyle = lightGrad;
+      ctx.beginPath();
+      ctx.arc(lx, ly, lightR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
 
   // Water wake effect for amphibious vehicles in water
   if (v.amphibious && isInWater(v.x, v.y)) {
@@ -1556,6 +1605,22 @@ function updateFireSystem(dt) {
 // CRASH SYSTEM — functions
 // ============================================================
 
+function resetCrashState() {
+  crashState.active = false;
+  crashState.elapsedTime = 0;
+  crashState.ambulanceArrived = false;
+  crashState.ambulanceTimer = 0;
+  crashState.ambulanceDeparted = false;
+  crashState.adacStartTimer = 0;
+  crashState.adacPhase = 'driving-to-scene';
+  crashState.adacTargetCar = 0;
+  crashState.despawnTimer = -1;
+  crashState.cars[0].towed = false;
+  crashState.cars[0].towedToParking = false;
+  crashState.cars[1].towed = false;
+  crashState.cars[1].towedToParking = false;
+}
+
 function startCrash() {
   var loc = CRASH_LOCATIONS[Math.floor(Math.random() * CRASH_LOCATIONS.length)];
   var cx = loc.fx * worldW;
@@ -1614,7 +1679,7 @@ function updateCrashAmbulanceResponse(v, dt) {
     v.y += v.vy * dt;
 
     crashState.ambulanceTimer += dt;
-    if (crashState.ambulanceTimer >= 120) {
+    if (crashState.ambulanceTimer >= 3) {
       crashState.ambulanceDeparted = true;
     }
     return;
@@ -2648,9 +2713,11 @@ function setupUI() {
 
   document.getElementById('btn-crash').addEventListener('click', function(e) {
     e.stopPropagation();
-    if (!crashState.active) {
-      startCrash();
+    if (crashState.active) {
+      // Despawn active response vehicles: reset ambulance and ADAC to roaming state
+      resetCrashState();
     }
+    startCrash();
   });
 }
 
